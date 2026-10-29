@@ -1,0 +1,83 @@
+<title>Tournament desk</title>
+<!--
+  The page is split so several people can work on it at once:
+    tdesk.html            this shell: shared styles, the top bar, the layout
+    static/core.js        shared: data refresh, helpers (post, setCtl, toast, f2 ...), tab switching
+    static/sidebar.js     always visible: bracket, results & fixtures
+    static/tab_model.js   tab "Model theos"   (theos, deflection, board, pricing, setup)
+    static/tab_positions.js tab "Positions"   (instruments, P&L, orders, manual quotes, quoting settings)
+    static/tab_hedging.js tab "Hedging"       (exposure by outcome - to be built out)
+  A tab file calls TABS.register({id, title, html, render}) and only touches elements inside its own html.
+-->
+<style>
+:root{--bg:#ffffff;--card:#ffffff;--line:#dde1e6;--ink:#1a1f26;--mut:#6b7480;--acc:#1f6fd1;--good:#178a4c;--bad:#d03a3a;--warn:#e0a000;--field:#f6f7f9;--hover:#eef3fb}
+body{background:var(--bg);color:var(--ink);font:13px/1.4 system-ui,Segoe UI,sans-serif;margin:0;padding:0 16px 40px}
+h2{font-size:14px;margin:0 0 8px;color:var(--mut);text-transform:uppercase;letter-spacing:.05em}
+.bar{position:sticky;top:0;z-index:5;background:var(--bg);display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:10px 0;border-bottom:1px solid var(--line)}
+.layout{display:grid;grid-template-columns:minmax(0,1fr) 400px;gap:16px;align-items:start}
+.side{position:sticky;top:58px;max-height:calc(100vh - 70px);overflow-y:auto}
+@media (max-width:1100px){.layout{grid-template-columns:1fr}.side{position:static;max-height:none}}
+.tabs{display:flex;gap:4px;margin-top:12px;border-bottom:2px solid var(--line)}
+.tabs button{border:none;border-bottom:3px solid transparent;border-radius:0;background:none;padding:8px 16px;font-weight:600;color:var(--mut);margin-bottom:-2px}
+.tabs button.act{color:var(--acc);border-bottom-color:var(--acc)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px;margin-top:12px}
+.row{display:flex;flex-wrap:wrap;gap:12px;align-items:center}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:12px}
+button{background:var(--field);color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:5px 10px;cursor:pointer;font:inherit}
+button:hover{border-color:var(--acc)}
+button.on{background:var(--good);color:#fff;border-color:var(--good);font-weight:600}
+button.kill{background:var(--bad);border-color:var(--bad);color:#fff;font-weight:700}
+button.warn{background:var(--warn);border-color:var(--warn);color:#1b1300;font-weight:700}
+input,select,textarea{background:#fff;color:var(--ink);border:1px solid var(--line);border-radius:5px;padding:4px 6px;font:inherit}
+input[type=number]{width:64px}
+.badge{padding:3px 8px;border-radius:5px;font-weight:700}
+.paper{background:#e3e7ec}.live{background:var(--bad);color:#fff}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:4px;vertical-align:middle}
+.banner{background:#fff4d6;border:1px solid var(--warn);border-radius:6px;padding:6px 10px;margin-top:8px}
+.mut{color:var(--mut)}.pos{color:var(--good)}.neg{color:var(--bad)}
+.big{font-size:26px;font-weight:700;min-width:70px;text-align:center}
+.tbl{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}
+th,td{padding:3px 6px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap}
+th{color:var(--mut);font-weight:500;background:var(--card)}
+td.l,th.l{text-align:left}
+td.click{cursor:pointer}td.click:hover{background:var(--hover)}
+.err{color:var(--bad);font-weight:600}
+.ok{color:var(--good)}
+.ctl{display:flex;flex-direction:column;gap:2px}.ctl label{color:var(--mut);font-size:11px}
+details summary{cursor:pointer;color:var(--mut);text-transform:uppercase;font-size:14px;letter-spacing:.05em}
+#toast{position:fixed;right:16px;bottom:16px;background:#1a1f26;color:#fff;border:1px solid var(--line);padding:8px 12px;border-radius:6px;display:none;max-width:420px;z-index:10}
+</style>
+
+<div class="bar">
+  <b>Tournament desk</b>
+  <span id="mode" class="badge paper">PAPER</span>
+  <input id="market" placeholder="market id" style="width:240px">
+  <button onclick="setCtl({market:val('market')})">Load</button>
+  <span id="mstatus" class="mut"></span>
+  <span id="api"></span>
+  <span style="flex:1"></span>
+  <button id="quoteBtn" onclick="toggleQuote()">Quoting OFF</button>
+  <button class="warn" onclick="post('/api/incoming',{}).then(()=>toast('pulled - enter the result, then switch quoting on'))">Result incoming - pull</button>
+  <button class="kill" onclick="post('/api/kill',{}).then(()=>toast('KILLED: all orders pulled, quoting off'))">KILL</button>
+  <span title="marked to market: mid, else last trade">MTM P&amp;L <b id="pnl">-</b></span>
+</div>
+<div id="err" class="err"></div>
+<div id="paused" class="banner" hidden></div>
+
+<div class="layout">
+  <main>
+    <div class="tabs" id="tabBar"></div>
+    <div id="tabBody"></div>
+  </main>
+  <aside class="side" id="side"></aside>
+</div>
+<div id="toast"></div>
+
+<script>window.TDESK_TOKEN = "__TRADE_TOKEN__";</script>
+<script src="/static/core.js"></script>
+<script src="/static/sidebar.js"></script>
+<script src="/static/tab_model.js"></script>
+<script src="/static/tab_positions.js"></script>
+<script src="/static/tab_hedging.js"></script>
+<script>start();</script>

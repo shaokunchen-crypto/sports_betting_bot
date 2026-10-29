@@ -1,0 +1,6 @@
+my_keys.py
+tdesk_token.txt
+tdesk_state.json
+tdesk_state.json.tmp
+__pycache__/
+.venv/
