@@ -118,7 +118,9 @@
   "deflPct": 0.5,
   "autoDefl": false,
   "deflCount": 3,
-  "maxPosAdj": {},
+  "maxPosAdj": {
+   "Apex": 10
+  },
   "k": 1.0,
   "c": 1.0,
   "maxPos": 10,
@@ -151,7 +153,10 @@
    "Nova": 0.29999999999999716
   },
   "paKeep": {},
-  "edgeAdj": {},
+  "edgeAdj": {
+   "Rogue": 1.5,
+   "Echo": 1.5
+  },
   "hidden": [],
   "layout": {},
   "deflPos": {
