@@ -4,5 +4,4 @@ tdesk_state.json
 tdesk_state.json.tmp
 __pycache__/
 .venv/
-my_keys_v2.py
 .idea/

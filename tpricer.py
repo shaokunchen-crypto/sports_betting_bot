@@ -36,7 +36,6 @@ QF = [("QFA", "1A", "C2"), ("QFB", "1D", "C3"), ("QFC", "1B", "C1"), ("QFD", "1C
 SF = [("SF1", "QFA", "QFB"), ("SF2", "QFC", "QFD")]
 KO_ORDER = [m for m, _, _ in CROSS] + [m for m, _, _ in QF] + ["SF1", "SF2", "F", "T"]
 PRESETS = {"Even field": 0.40, "Moderate": 0.60, "Strong favourites": 0.75}
-MAX_SHIFT = 1.0                                         # deflection: largest strength move (goal-rate x e^0.5)
 CONFIDENCE = {"Low": (0.25, 0.35), "Medium": (0.5, 0.30), "High": (0.75, 0.25)}   # blend weight, prior sd
 
 
@@ -121,40 +120,23 @@ def solve_sigma(p_target, goals, kappa=0.0):
     return (lo + hi) / 2
 
 
-def solve_gap(p_target, goals, kappa=0.0):
-    """Strength gap D so that a team D stronger wins one match with probability p_target."""
-    mu = mu_of(goals)
-    lo, hi = 0.0, 10.0
-    for _ in range(60):
-        mid = (lo + hi) / 2
-        if wdl(*lam(mid / 2, -mid / 2, mu, kappa))[0] < p_target:
-            lo = mid
-        else:
-            hi = mid
-    return (lo + hi) / 2
-
-
-def rating_strengths(st):
-    """From given ratings (1 = strongest, ties allowed): strength linear in the rating, scaled so the
-    best-rated team beats the worst-rated with probability pBeat. None if ratings aren't complete."""
+def seed_values(st):
+    """Each team's seed as a number (1 = strongest): st["ratings"][team] if set (any value, e.g. 2.4 =
+    between seeds 2 and 3, to say how close two teams are or give one a buff), else its seed position."""
     r = st.get("ratings") or {}
-    if not all(isinstance(r.get(t), (int, float)) for t in st["teams"]):
-        return None
-    x = np.array([float(r[t]) for t in st["teams"]])
-    if x.max() == x.min():
-        return np.zeros(16)
-    gap = solve_gap(st["pBeat"], st["goals"], st.get("kappa", 0.0))
-    return gap * (x.mean() - x) / (x.max() - x.min())
+    return np.array([float(r[t]) if isinstance(r.get(t), (int, float)) else k + 1.0 for k, t in enumerate(st["teams"])])
+
+
+def seed_strength(sigma, seed, n=16):
+    """The seed curve S_r = σ·Φ⁻¹(1 - (r - 0.5)/n) for any seed value r (kept inside 0.55 .. n + 0.45)."""
+    nd = NormalDist()
+    return np.array([sigma * nd.inv_cdf(1 - (min(max(r, 0.55), n + 0.45) - 0.5) / n) for r in seed])
 
 
 # --- strengths: prior + MAP update ---------------------------------------------------------
 def prior(st):
     sigma = solve_sigma(st["pBeat"], st["goals"], st.get("kappa", 0.0))
-    s0 = seed_strengths(sigma)
-    rs = rating_strengths(st)
-    if rs is not None:                                 # ratings given: they set the strengths, not the seed
-        s0 = rs
-        sigma = float(np.std(rs)) or sigma
+    s0 = seed_strength(sigma, seed_values(st))           # integer seeds: exactly seed_strengths(sigma)
     w, sd = CONFIDENCE.get(st.get("confidence", "Low"), CONFIDENCE["Low"])
     tier = 2 * (s0.max() - s0.min()) / 15              # gap between neighbouring seeds, x2
     nudge = np.array([float(st.get("nudges", {}).get(t, 0)) for t in st["teams"]])
@@ -293,7 +275,7 @@ def simulate(st, n=None, seed=7, shift=None, post=None):
     pay[rows, third], pay[rows, fourth] = PAY["third"], PAY["fourth"]
 
     theo = pay.mean(axis=0)
-    out = {"teams": teams, "theo": theo, "sd": pay.std(axis=0), "cov": np.cov(pay, rowvar=False),
+    out = {"teams": teams, "theo": theo, "sd": pay.std(axis=0), "cov": np.cov(pay, rowvar=False), "pay": pay,
            "finish": np.stack([(finish == k).mean(axis=0) for k in range(1, 5)], axis=1),
            "pQF": (pay >= PAY["qf"]).mean(axis=0), "pSF": (pay >= PAY["fourth"]).mean(axis=0),
            "pF": (pay >= PAY["second"]).mean(axis=0), "pWin": (pay == PAY["first"]).mean(axis=0),
@@ -370,59 +352,36 @@ def feasible(st):
     return rng_
 
 
-# --- deflection: move a player's fair, and let it propagate through goal rates -------------
-def deflect(st, targets, n=30000, iters=3, post=None):
-    """Find strength shifts so the simulated theo of each targeted team hits its target fair,
-    then return ALL 16 theos from those strengths (they still add up to 310): the team we're long
-    gets cheaper and its likely opponents get dearer, most of all whoever it would meet next."""
-    post = post or posterior(st)
-    idx = {t: k for k, t in enumerate(st["teams"])}
-    tg = {idx[t]: v for t, v in targets.items() if t in idx}
-    shift = np.zeros(16)
-    base = simulate(st, n=n, seed=11, post=post)["theo"]
-    if not tg:
-        return base, shift
-    h = 0.15
-    slope = {}
-    for i in tg:                                      # d theo_i / d S_i, one team at a time (common random numbers)
-        e = np.zeros(16)
-        e[i] = h
-        slope[i] = max((simulate(st, n=n, seed=11, shift=e, post=post)["theo"][i] - base[i]) / h, 1.0)
-    cur = base
-    for _ in range(iters):
-        for i, target in tg.items():                  # bounded: an unreachable target (fair pushed past
-            shift[i] = float(np.clip(shift[i] + (target - cur[i]) / slope[i], -MAX_SHIFT, MAX_SHIFT))   # its range) can't blow up
-        cur = simulate(st, n=n, seed=11, shift=shift, post=post)["theo"]
-    return cur, shift
+def standings(st):
+    """Group tables from the scores entered so far: {team: {rank, pts, p, gd, gf}} (points, GD, GF, seed)."""
+    res, out = st.get("results", {}), {}
+    for g in GROUPS:
+        tab = {t: {"pts": 0, "p": 0, "gd": 0, "gf": 0} for t in st["groups"][g]}
+        for mid, r in res.items():
+            if mid.startswith(g + ":") and r.get("ga") is not None and r.get("a") in tab and r.get("b") in tab:
+                for t, f, a in ((r["a"], r["ga"], r["gb"]), (r["b"], r["gb"], r["ga"])):
+                    tab[t]["p"] += 1
+                    tab[t]["gd"] += f - a
+                    tab[t]["gf"] += f
+                    tab[t]["pts"] += 3 if f > a else 1 if f == a else 0
+        order = sorted(tab, key=lambda t: (-tab[t]["pts"], -tab[t]["gd"], -tab[t]["gf"], st["teams"].index(t)))
+        for k, t in enumerate(order):
+            out[t] = {**tab[t], "rank": k + 1}
+    return out
 
 
-def jacobian(st, n=20000, h=0.1, post=None):
-    """base theos and J[:, i] = d theo / d strength_i (16 x 16), common random numbers.
-    Every column sums to 0 (the pot is always 310). Doesn't depend on our position, so it's
-    worked out once per setup/result and deflection is then instant (deflect_linear)."""
-    post = post or posterior(st)
-    base = simulate(st, n=n, seed=11, post=post)["theo"]
-    J = np.zeros((16, 16))
-    for i in range(16):
-        e = np.zeros(16)
-        e[i] = h
-        J[:, i] = (simulate(st, n=n, seed=11, shift=e, post=post)["theo"] - base) / h
-    return base, J
-
-
-def deflect_linear(J, moves):
-    """moves {team index: wanted change in its fair}. Solve for the strength shifts that make exactly
-    those moves (all at once, cross effects included), bounded by MAX_SHIFT, and return the change
-    to all 16 fairs: the team we're long goes down, its likely opponents up, total unchanged."""
-    out = np.zeros(J.shape[0])
-    T = sorted(i for i, d in moves.items() if d)
+# --- propagation: move some theos, the rest follow by covariance -----------------------------
+def propagate(cov, targets):
+    """targets {team index: wanted change}. Every target hits exactly (all at once) and the other
+    teams move by their regression on the targets (Gaussian conditional mean): the most correlated
+    teams move most. Any set whose total payout is fixed (all 16 = 310, the two finalists = 175 ...)
+    has zero covariance with everything, so its total never moves."""
+    out = np.zeros(cov.shape[0])
+    T = sorted(i for i, d in targets.items() if d and cov[i, i] > 1e-9)
     if not T:
         return out
-    A = J[np.ix_(T, T)]
-    d = np.array([moves[i] for i in T])
-    s = np.linalg.lstsq(A, d, rcond=None)[0]
-    s = np.clip(s, -MAX_SHIFT, MAX_SHIFT)
-    return J[:, T] @ s
+    s = np.linalg.lstsq(cov[np.ix_(T, T)], np.array([targets[i] for i in T]), rcond=None)[0]
+    return cov[:, T] @ s
 
 
 # --- tests --------------------------------------------------------------------------------------
@@ -465,17 +424,23 @@ def _test():
     # points: g0 6, g1 6, g2 4, g3 1; g0 GD +2 (1-0, 0-1, 2-0) vs g1 GD +2 (0-1, 2-0, 1-0)... GF g0 3, g1 3 -> h2h: g0 beat g1
     fin = simulate(t, n=2000)["finish"]
     assert fin[t["teams"].index(g[0])][0] > 0.999 and fin[t["teams"].index(g[1])][1] > 0.999, fin
+    # fractional seeds: integer values reproduce the seed curve; 1.5 sits between seeds 1 and 2
+    sg = solve_sigma(0.6, 2.5)
+    assert np.allclose(seed_strength(sg, np.arange(1, 17)), seed_strengths(sg))
+    s15 = seed_strength(sg, [1.5])[0]
+    assert seed_strengths(sg)[1] < s15 < seed_strengths(sg)[0]
+    assert np.allclose(prior({**st, "ratings": {}})[0], prior(st)[0])
     # MAP: a big upset moves strengths, but the prior limits it
     m0 = posterior(st)[0]
     up = {**st, "results": {f"A:Team16-Team1": {"a": "Team16", "b": "Team1", "ga": 5, "gb": 0}}}
     m1 = posterior(up)[0]
     assert m1[15] > m0[15] and m1[0] < m0[0] and m1[15] < m0[0], (m0[[0, 15]], m1[[0, 15]])
-    # deflection: lowering one team's fair raises the others, total stays 310
-    base = simulate(st, n=20000, seed=11)["theo"]
-    new, _ = deflect(st, {"Team1": base[0] - 5}, n=20000)
-    assert abs(new[0] - (base[0] - 5)) < 0.6 and abs(new.sum() - 310) < 1e-6 and np.all(new[1:] >= base[1:] - 0.3)
+    # propagation: lowering one team's theo raises every other (its closest rivals most), total stays 310
+    cov = simulate(st, n=20000, seed=11)["cov"]
+    mv = propagate(cov, {0: -5.0})
+    assert abs(mv[0] + 5) < 1e-9 and abs(mv.sum()) < 1e-6 and np.all(mv[1:] > 0) and mv[1] == mv[1:].max(), mv
     print(f"tpricer.py: all tests passed (100k-equivalent sim {ms:.0f} ms for 200k; equal: 1X {win_theo:.2f}, 2X {two_theo:.2f}; "
-          f"A+B {ab:.1f}; deflect Team1 -5 -> others +{(new[1:] - base[1:]).sum():.2f})")
+          f"A+B {ab:.1f}; Team1 -5 -> others +{mv[1:].sum():.2f})")
 
 
 def _raw_sim(st, n, post):

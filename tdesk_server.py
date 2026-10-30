@@ -4,39 +4,37 @@
     python tdesk_server.py --trade    # live: can send orders (asks you to type LIVE)
     then open http://localhost:8003
 
-Quoting, per mapped contract (numbers from tpricer.py and the controls on the page):
-    half-spread = k * sigma_next + c        (sigma_next: how much the theo moves on the next result)
-    deflection: our position moves our fair by DEFLECTION x half-spread per share
-        (25%: long 4 -> fair drops one whole half-spread: new offer = old fair, new fair = old bid).
-        It propagates: the move is turned into a strength (goal-rate) change and the whole
-        tournament is re-simulated, so everyone else moves too - most of all likely opponents.
-    top of book: bid = fair - half, ask = fair + half, stepped one tick inside anyone else
-        if that still leaves MIN EDGE; size TOP SIZE.
-    depth: DEPTH more levels, STEP apart (price units), size = TOP SIZE x (edge / top edge)^EXP
-        (EXP 1: fair 10, 11 for 4 -> 12 for 8; EXP 0.5 = square-root scaling), and we also
-        sit behind anyone resting further out (within MAX DEPTH of our top), sized the same way.
-Rebate (on by default): the exchange pays for being within REBATE WIDTH on COVERAGE (80%) of the
-    open contracts, so that many teams - the ones with the smallest model spread - are quoted no
-    wider than REBATE WIDTH; the rest keep the normal k * sigma_next + c width.
-Arbs are left to the separate arb bot.
-    never outside the payouts still possible for that team, never past MAX POS, never
-    crossing someone else's price, and never letting our quote plus everyone else's best
-    prices lock in a profit against us (the 310 self-check).
-Click "Result incoming" before a result is revealed (pulls everything); enter the result,
-then switch quoting back on.
+Fair values, per team (numbers from tpricer.py and the controls on the page):
+    our   = model theo + the trader's edits. An edit pins that team; every other team moves by its
+            covariance with the pinned ones (most correlated move most), so totals that are fixed
+            (all 16 = 310, the two finalists = 175 ...) never move. Edits are dropped on each result.
+    theo  = (n x other market makers' mid + 1 x our) / (n + 1), n = market makers quoting both sides.
+    PA    = theo - gamma x (Sigma q) + the trader's PA edits (propagated the same way) + the PA - theo
+            gap kept through the last result. Sigma q: our position times the payout covariance, so
+            being long England lowers England AND raises whoever England's payout trades off against.
+            gamma is set so a share of a typical market moves its own PA by DEFL.
+    known payout (lo == hi from the results): theo = PA = that value, quoted 0.2 wide around it.
+Quoting, per mapped contract: one 1-lot bid and offer (plan_quotes has the rules). Starts START WIDTH
+    wide after every result and narrows to the MM spread over NARROW SECS; copies the other market
+    makers' top of book while our PA is inside it. Free money (a known payout mispriced, a price
+    outside the range a team can still pay) is always taken.
+    Traded against: that side is pulled and stays off until "quotes ON" is clicked for that market;
+    the position moves PA so the other side gets more competitive.
 """
 import difflib
 import json
 import math
 import os
 import re
+import secrets
+import socket
 import sys
 import threading
 import time
 import traceback
 from collections import defaultdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 import numpy as np
 
@@ -47,8 +45,8 @@ from mockx import ApiError, from_px
 
 PORT = int(os.environ.get("TDESK_PORT", 8003))     # set TDESK_PORT to run a second copy alongside
 HTML_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tdesk.html")
-STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")   # core.js, sidebar.js, tab_*.js
 TOKEN_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tdesk_token.txt")
+KNOWN_WIDTH = 0.2                        # width of our market around a payout the results have fixed
 
 
 def _token():
@@ -68,33 +66,45 @@ def _token():
 
 TOKEN = _token()
 ALLOWED_HOSTS = {f"localhost:{PORT}", f"127.0.0.1:{PORT}"}
+SHARE = "--share" in sys.argv            # other laptops on the network may use this desk (with the link)
 PLAN_MAX_AGE = 5.0                       # the gateway pulls everything if the plan is older than this
-CONTROLS_DEFAULT = {"deflection": 0.25, "topSize": 4, "depth": 2, "step": 1.0, "exp": 1.0, "maxDepth": 5.0,
-                    "maxOrder": 20, "k": 1.0, "c": 1.0, "minEdge": 1.0, "maxPos": 20, "improve": True,
-                    "quoting": False, "clickQty": 1, "market": "", "mapping": {}, "mappingOk": False,
-                    "budget": 2000.0, "off": [], "rebate": True, "rebateWidth": 2.9, "coverage": 0.8,
-                    "ourWeight": 0.7, "requoteMin": 0.2, "newsPause": 5.0,
-                    "rebateMargin": 1, "twoSided": True, "hardExtra": 5,
-                    "take": True, "takeEdge": 1.0, "takeMax": 5, "manualDefl": {}, "manualStep": 0.5}
+QUOTE_SIZE = 1                           # one bid and one offer of 1 lot per market
+CONTROLS_DEFAULT = {"deflPct": 0.5, "autoDefl": True,"k": 1.0, "c": 1.0, "maxPos": 20, "startWidth": 20.0, "narrowSecs": 600.0,
+                    "wideSince": 0.0, "quoting": False, "clickQty": 1, "market": "", "mapping": {}, "mappingOk": False,
+                    "budget": 2000.0, "off": [], "rebateWidth": 2.9, "nTight": 14,
+                    "requoteMin": 0.0, "newsPause": 5.0, "hardExtra": 5,
+                    "take": True, "takeEdge": 1.0, "takeMax": 5, "theoAdj": {}, "paAdj": {}, "paKeep": {},
+                    "edgeAdj": {}, "hidden": [], "layout": {}, "deflPos": {}, "deflAmt": {}}
 
 LOCK = threading.Lock()
+STATE_LOCK = threading.RLock()           # one writer at a time to tdesk_state.json (several people on one desk)
 MODEL = {"key": None}
 
 
 # --- saved state: tpricer's tdesk_state.json, plus our "controls" ---------------------------------
 def controls():
-    return {**CONTROLS_DEFAULT, **tpricer.load_state().get("controls", {})}
+    saved = tpricer.load_state().get("controls", {})
+    return {k: saved.get(k, d) for k, d in CONTROLS_DEFAULT.items()}
 
 
 def save_controls(changes):
+    with STATE_LOCK:
+        return _save_controls(changes)
+
+
+def _save_controls(changes):
     st = tpricer.load_state()
-    c = {**CONTROLS_DEFAULT, **st.get("controls", {})}
+    c = {**CONTROLS_DEFAULT, **{k: v for k, v in st.get("controls", {}).items() if k in CONTROLS_DEFAULT}}
     for k, v in changes.items():
         if k not in CONTROLS_DEFAULT:
             continue
         d = CONTROLS_DEFAULT[k]
-        if k == "manualDefl":
-            c[k] = {str(a): float(b) for a, b in (v or {}).items() if isinstance(b, (int, float)) and b and abs(b) <= 100}
+        if k in ("theoAdj", "paAdj", "paKeep", "edgeAdj"):
+            c[k] = {str(a): float(b) for a, b in (v or {}).items() if isinstance(b, (int, float)) and abs(b) <= 100}
+        elif k in ("deflPos", "deflAmt"):
+            c[k] = {str(a): float(b) for a, b in (v or {}).items() if isinstance(b, (int, float))}
+        elif k == "layout":
+            c[k] = v if isinstance(v, dict) else {}
         elif isinstance(d, dict):
             c[k] = {str(a): str(b) for a, b in (v or {}).items() if b}
         elif isinstance(d, list):
@@ -126,9 +136,17 @@ def model():
             t0 = time.time()
             post = tpricer.posterior(st)
             sim = tpricer.simulate(st, post=post)
+            pay = sim.pop("pay")
+            # pairs whose combined payout can't move, (long X + long Y) or (long X + short Y), and what it is
+            n = pay.shape[1]
+            lock_sum, lock_diff = np.zeros((n, n), bool), np.zeros((n, n), bool)
+            for i in range(n):
+                lock_sum[i] = np.ptp(pay[:, [i]] + pay, axis=0) < 1e-9
+                lock_diff[i] = np.ptp(pay[:, [i]] - pay, axis=0) < 1e-9
             MODEL.clear()
             MODEL.update(key=key, sim=sim, post=post, readouts=tpricer.readouts(st, sim),
-                         feasible=tpricer.feasible(st), slots=slots(st, sim), J=None,
+                         feasible=tpricer.feasible(st), slots=slots(st, sim), lockSum=lock_sum, lockDiff=lock_diff,
+                         sumVal=pay[0][:, None] + pay[0][None, :], diffVal=pay[0][:, None] - pay[0][None, :],
                          ms=round((time.time() - t0) * 1000))
         return st, dict(MODEL)
 
@@ -151,6 +169,80 @@ def slots(st, sim):
     out["F"] = [place.get("SF1"), place.get("SF2")]
     out["T"] = [place.get("SF1L"), place.get("SF2L")]
     return out
+
+
+# --- fair values ---------------------------------------------------------------------------------
+def market_mids(st, tops, by_team, view):
+    """Per team: everyone else's top-of-book mid (nan if not two-sided) and n = how many other
+    market makers are quoting both sides there (1 if the exchange doesn't say who owns orders)."""
+    mid, n = np.full(len(st["teams"]), np.nan), np.zeros(len(st["teams"]))
+    insts = {i["id"]: i for i in (view or {}).get("instruments", [])}
+    for k, t in enumerate(st["teams"]):
+        tb, inst = tops.get(by_team.get(t)), insts.get(by_team.get(t))
+        if not tb or not tb["oBids"] or not tb["oAsks"] or tb.get("closed"):
+            continue
+        mid[k] = (tb["oBids"][0] + tb["oAsks"][0]) / 2
+        def owners(side):
+            return {o.get("owner") for l in inst[side] for o in l["orders"] if not o.get("mine") and o.get("owner")}
+        both = owners("bids") & owners("asks")
+        n[k] = len(both) or 1
+    return mid, n
+
+
+def update_defl_book(st, ctl, q, width):
+    """Deflection book, per team: our position and D = the sum over the shares we hold of the edge
+    (half our width) at the time we got each one. Adding shares adds edge x shares; reducing scales D
+    down in proportion (flat -> 0); going through zero starts again at today's edge. Saved when it
+    changes. Returns the deflAmt dict."""
+    pos, amt, changed = dict(ctl["deflPos"]), dict(ctl["deflAmt"]), False
+    for k, t in enumerate(st["teams"]):
+        new, old, d = float(q[k]), pos.get(t, 0.0), amt.get(t, 0.0)
+        if new == old:
+            continue
+        e = float(width[k]) / 2 if not np.isnan(width[k]) else (d / old if old else 0.0)
+        if old == 0 or (old > 0) == (new > 0) and abs(new) > abs(old):
+            d += e * (new - old)
+        elif new == 0 or (old > 0) == (new > 0):
+            d *= new / old
+        else:
+            d = e * new
+        pos[t], amt[t], changed = new, d, True
+    if changed:
+        save_controls({"deflPos": {t: p for t, p in pos.items() if p}, "deflAmt": {t: a for t, a in amt.items() if a}})
+    return amt
+
+
+def fairs(st, M, ctl, mkt=None):
+    """Per team (see the top of the file):
+    base  model theo;  our = base + our theo edits (propagated by covariance)
+    theo  = (n x other market makers' mid + 1 x our) / (n + 1)
+    pa0   = theo + deflection + the PA offset kept through the last result;  pa = pa0 + PA edits.
+    deflection (AUTO DEFLECTION on): team j's own PA moves by DEFL PCT x D[j] against our position
+    (D: update_defl_book - make 9 at 11, get lifted, 50% -> PA 10.5), and every other team by its
+    covariance with j: - Sigma[:, j] x DEFL PCT x D[j] / Sigma[j, j]. Each column of Sigma adds up
+    to 0 over any set whose total payout is fixed, so those totals never move."""
+    sim, feas = M["sim"], M["feasible"]
+    lo = np.array([feas.get(t, [0, 100])[0] for t in st["teams"]], dtype=float)
+    hi = np.array([feas.get(t, [0, 100])[1] for t in st["teams"]], dtype=float)
+    known = lo == hi
+    cov = sim["cov"].copy()
+    cov[known, :] = 0
+    cov[:, known] = 0
+    idx = {t: k for k, t in enumerate(st["teams"])}
+    clip = lambda x: np.where(known, lo, np.clip(x, lo, hi))
+    base = clip(sim["theo"])
+    our = clip(base + tpricer.propagate(cov, {idx[t]: d for t, d in ctl["theoAdj"].items() if t in idx}))
+    mid, n = mkt if mkt is not None else (np.full(len(base), np.nan), np.zeros(len(base)))
+    has = ~np.isnan(mid) & ~known
+    theo = np.where(has, (n * np.clip(np.nan_to_num(mid), lo, hi) + our) / (n + 1), our)
+    var = np.diag(cov)
+    D = np.array([ctl["deflAmt"].get(t, 0.0) for t in st["teams"]])
+    defl = -(cov @ np.where(var > 1e-9, ctl["deflPct"] * D / np.where(var > 1e-9, var, 1.0), 0.0))
+    defl = defl if ctl["autoDefl"] else np.zeros(len(base))
+    keep = np.array([ctl["paKeep"].get(t, 0.0) for t in st["teams"]])
+    pa0 = theo + defl + keep
+    pa = pa0 + tpricer.propagate(cov, {idx[t]: d for t, d in ctl["paAdj"].items() if t in idx})
+    return {"base": base, "our": our, "theo": clip(theo), "pa0": clip(pa0), "pa": clip(pa), "n": n, "mid": mid}
 
 
 # --- contract mapping ----------------------------------------------------------------------------
@@ -182,18 +274,12 @@ def auto_map(names, teams):
 
 
 def check_mapping(mapping, teams, names):
-    """Problems that block quoting. Teams without a contract are allowed (the test market has only
-    3): they're simply not quoted - see unmapped_teams()."""
+    """Problems that block quoting. Teams without a contract are allowed (just not quoted)."""
     probs = [f"contract '{n}' not mapped" for n in names if n not in mapping]
     vals = [mapping[n] for n in names if n in mapping]
     probs += [f"{t} mapped twice" for t in sorted(set(vals)) if vals.count(t) > 1]
     probs += [f"'{v}' is not a team" for v in vals if v not in teams]
     return probs
-
-
-def unmapped_teams(mapping, teams, names):
-    vals = {mapping[n] for n in names if n in mapping}
-    return [t for t in teams if t not in vals]
 
 
 # --- the quote plan (pure: no exchange calls, so it can be tested) --------------------------------
@@ -218,32 +304,6 @@ def book_tops(view):
     return tops
 
 
-def ladder(ctl, f, top, lo, hi, tick, joins, side, room, worst=None, risk_left=float("inf")):
-    """Our orders on one side: top level + depth + joins behind others, size scaled by edge.
-    worst: the payout that hurts this side most (bids: lowest possible, offers: highest); each lot
-    risks |price - worst|, and the side stops once that would use up risk_left (the budget)."""
-    sgn = -1 if side == "bid" else 1                        # further from fair = down for bids
-    edge0 = max(abs(top - f), tick)
-    step = max(ctl["step"], tick)                           # step and join range are in price units
-    prices = [round(round((top + sgn * j * step) / tick) * tick, 9) for j in range(ctl["depth"] + 1)]
-    prices += [p for p in joins if 0 < sgn * (p - top) <= ctl["maxDepth"] + 1e-9]
-    out = []
-    for p in sorted({round(x, 9) for x in prices}, key=lambda x: sgn * x):
-        if not lo - 1e-9 <= p <= hi + 1e-9 or room <= 0:
-            continue
-        q = int(round(ctl["topSize"] * (abs(p - f) / edge0) ** ctl["exp"]))
-        q = max(1, min(q, ctl["maxOrder"], room))
-        per = abs(p - worst) if worst is not None else 0.0
-        if per > 0:
-            q = min(q, int(risk_left // per))
-        if q < 1:
-            break
-        out.append((side, p, q))
-        room -= q
-        risk_left -= q * per
-    return out
-
-
 def risk_used(st, feas, fair, by_team, positions):
     """What our positions can still lose from fair: long -> down to the lowest payout, short -> up to the highest."""
     total = 0.0
@@ -255,48 +315,71 @@ def risk_used(st, feas, fair, by_team, positions):
 
 
 def n_tight(tops, ctl):
-    """How many contracts to quote within the rebate width: COVERAGE of the open ones, + MARGIN spare."""
-    if not ctl["rebate"]:
-        return 0
+    """How many contracts to quote within the MM spread: N TIGHT, at most the open ones."""
     n_open = sum(1 for x in tops.values() if not x.get("closed"))
-    return min(n_open, math.ceil(ctl["coverage"] * n_open - 1e-9) + int(ctl["rebateMargin"]))
+    return max(0, min(n_open, int(ctl["nTight"])))
 
 
-def tight_teams(st, half, by_team, tops, feas, ctl):
-    """First guess at the rebate markets (used for the deflection half-spread): the quotable
-    teams with the smallest model spread. plan_quotes makes the final pick."""
-    cands = [k for k, t in enumerate(st["teams"]) if by_team.get(t) and not tops[by_team[t]].get("closed")
-             and t not in ctl["off"] and feas.get(t, [0, 100])[0] != feas.get(t, [0, 100])[1]]
-    cands.sort(key=lambda k: half[k])
-    return {st["teams"][k] for k in cands[:n_tight(tops, ctl)]}
+def known_quotes(v, tick):
+    """A payout fixed at v: bid / offer KNOWN_WIDTH apart around it, kept inside 0..100."""
+    bid, ask = pricing.round_down(v - KNOWN_WIDTH / 2, tick), pricing.round_up(v + KNOWN_WIDTH / 2, tick)
+    if bid < 0:
+        bid, ask = 0.0, pricing.round_up(KNOWN_WIDTH, tick)
+    if ask > 100:
+        bid, ask = pricing.round_down(100 - KNOWN_WIDTH, tick), 100.0
+    return round(bid, 9), round(ask, 9)
 
 
-def quoted_half(st, half, tight, ctl):
-    """The half-spread we actually quote (deflection is a fraction of THIS)."""
-    return np.array([min(h, ctl["rebateWidth"] / 2) if t in tight else h for t, h in zip(st["teams"], half)])
+def width_now(ctl, target, now):
+    """Our market width: START WIDTH right after a result, narrowing in a straight line to target
+    over NARROW SECS."""
+    frac = max(0.0, 1 - (now - ctl["wideSince"]) / max(ctl["narrowSecs"], 1e-9))
+    return target + max(ctl["startWidth"] - target, 0.0) * frac
 
 
-def plan_quotes(st, feas, fair, half, tops, by_team, positions, ctl):
-    """Every order we want resting: {contract id: [(side, price, qty)]}, plus a row per team.
+def market_widths(st, feas, half, tops, by_team, ctl, now):
+    """(our width per team - nan where we don't quote or the payout is known -, known teams, tight teams).
+    The trader's edge for a market wins; otherwise width_now() towards the MM SPREAD for the N TIGHT
+    smallest-model-spread markets, 2 x (k * sigma_next + c) (at least the MM spread) for the rest."""
+    minw = ctl["rebateWidth"]
+    live = [k for k, t in enumerate(st["teams"]) if by_team.get(t) and not tops[by_team[t]].get("closed") and t not in ctl["off"]]
+    known = {k for k in live if feas.get(st["teams"][k], [0, 100])[0] == feas.get(st["teams"][k], [0, 100])[1]}
+    rest = sorted((k for k in live if k not in known), key=lambda k: half[k])
+    tight = known | set(rest[:max(0, n_tight(tops, ctl) - len(known))])
+    width = np.full(len(st["teams"]), np.nan)
+    for k in rest:
+        t, tick = st["teams"][k], tops[by_team[st["teams"][k]]]["tick"]
+        edge = ctl["edgeAdj"].get(t)
+        width[k] = (max(2 * edge, 2 * tick) if edge is not None
+                    else width_now(ctl, minw if k in tight else max(minw, 2 * float(half[k])), now))
+    return width, known, tight
 
-    Rebate (ctl rebate): n_tight() contracts are quoted no wider than REBATE WIDTH. A contract whose
-    payout is already fixed is quoted a tick either side of it (risk-free, and it counts). The rest
-    are picked by smallest model spread among those where a tight pair is possible without crossing
-    anyone or bidding above / offering below our fair. TWO-SIDED: a side blocked by max position
-    or the budget still shows 1 lot (until HARD EXTRA lots past max position), so every market has
-    a bid and an offer."""
+
+def plan_quotes(st, feas, fair, half, tops, by_team, positions, ctl, blocked=None, now=None):
+    """Every order we want resting: {contract id: [(side, price, qty)]} - one 1-lot bid and offer each -
+    plus a row per team (and row["take"]: a price someone else shows that we trade on now).
+
+    fair is the PA theo. Width = width_now(): wide after a result, narrowing to the MM SPREAD (the N
+    TIGHT smallest-model-spread markets) or to 2 x (k * sigma_next + c) (the rest).
+      PA inside everyone else's top of book -> copy it (or sit inside it once our width is tighter);
+      otherwise our own market around PA, and take their price if it gives TAKE EDGE against PA.
+    Never narrower than the MM spread, never crossing anyone, never outside the payouts still possible.
+    Known payout: quoted KNOWN_WIDTH around it. Always taken (TAKE on): a known payout offered below /
+    bid above it, and any offer below / bid above the range a team can still pay.
+    blocked {contract id: {"bid"/"ask"}}: sides we were traded on - nothing there until re-enabled."""
+    blocked, now = blocked or {}, time.time() if now is None else now
     plan, rows = {}, []
-    left = ctl["budget"] - risk_used(st, feas, fair, by_team, positions)   # per side, per team
+    left = ctl["budget"] - risk_used(st, feas, fair, by_team, positions)
     o_bid = {iid: t["oBids"][0] for iid, t in tops.items() if t["oBids"]}
     o_ask = {iid: t["oAsks"][0] for iid, t in tops.items() if t["oAsks"]}
-    w = ctl["rebateWidth"]
-    info = {}
-    for k, t in enumerate(st["teams"]):                          # pass 1: a normal and a tight pair each
+    minw = ctl["rebateWidth"]
+    width, known, tight = market_widths(st, feas, half, tops, by_team, ctl, now)
+    for k, t in enumerate(st["teams"]):
         iid = by_team.get(t)
         lo, hi = feas.get(t, [0, 100])
-        f, h = float(fair[k]), float(half[k])
-        row = {"team": t, "iid": iid, "fair": f, "half": h, "orders": [], "why": "",
-               "pos": positions.get(iid, 0) if iid else 0}
+        f = float(fair[k])
+        pos = positions.get(iid, 0) if iid else 0
+        row = {"team": t, "iid": iid, "fair": f, "orders": [], "why": "", "pos": pos, "note": ""}
         rows.append(row)
         if not iid:
             row["why"] = "no contract"
@@ -305,115 +388,74 @@ def plan_quotes(st, feas, fair, half, tops, by_team, positions, ctl):
             row["why"] = "pulled" if t in ctl["off"] else "contract closed / settled"
             plan[iid] = []
             continue
-        tick = tops[iid]["tick"]
-        if lo == hi:                                             # payout known: a tick either side is free money;
-            info[k] = {"fixed": True, "tick": tick, "bid": round(max(lo - tick, 0.0), 9),   # out (payout 0): 0 / 1 tick,
-                       "ask": round(lo + tick, 9)}                                     # still two-sided for the rebate
-            continue
-        h = max(h, tick)
+        tb, tick = tops[iid], tops[iid]["tick"]
         ob, oa = o_bid.get(iid), o_ask.get(iid)
-        others = [x for x in by_team.values() if x != iid]
-        # 310 self-check: nobody may sell the whole field for more than 310 by hitting our bid and
-        # everyone else's bids, or buy it for less than 310 by lifting our offer and everyone else's.
-        cap_bid = (pricing.round_down(tpricer.TOTAL - sum(o_bid[x] for x in others), tick)
-                   if len(others) == 15 and all(x in o_bid for x in others) else None)
-        cap_ask = (pricing.round_up(tpricer.TOTAL - sum(o_ask[x] for x in others), tick)
-                   if len(others) == 15 and all(x in o_ask for x in others) else None)
-        bid, ask = pricing.round_down(f - h, tick), pricing.round_up(f + h, tick)
-        if ctl["improve"]:                                       # top of book, if it still pays MIN EDGE
-            if ob is not None and ob >= bid and ob + tick <= f - ctl["minEdge"] + 1e-9:
-                bid = round(ob + tick, 9)
-            if oa is not None and oa <= ask and oa - tick >= f + ctl["minEdge"] - 1e-9:
-                ask = round(oa - tick, 9)
+        notes, take, cap_bid, cap_ask = [], None, 1e9, -1e9
+        if k in known:
+            bid, ask = known_quotes(lo, tick)
+            mode, notes = "known", [f"payout known: {lo:g}"]
+        else:
+            w, floor = float(width[k]), 0.0 if t in ctl["edgeAdj"] else minw     # the trader's own edge: no floor
+            if ob is not None and oa is not None and ob < f < oa:
+                bid, ask, mode = max(ob, f - w / 2), min(oa, f + w / 2), "copy"
+            else:
+                bid, ask, mode = f - w / 2, f + w / 2, "own"
+            bid, ask = pricing.round_down(bid, tick), pricing.round_up(ask, tick)
+            if ask - bid < floor - 1e-9:                         # never tighter than the MM spread
+                m = (bid + ask) / 2
+                bid, ask = pricing.round_down(m - floor / 2, tick), pricing.round_up(m + floor / 2, tick)
+            others = [x for x in by_team.values() if x != iid]
+            # 310 self-check: nobody may sell the whole field for more than 310 by hitting our bid and
+            # everyone else's bids, or buy it for less than 310 by lifting our offer and everyone else's.
+            if len(others) == 15 and all(x in o_bid for x in others):
+                cap_bid = pricing.round_down(tpricer.TOTAL - sum(o_bid[x] for x in others), tick)
+            if len(others) == 15 and all(x in o_ask for x in others):
+                cap_ask = pricing.round_up(tpricer.TOTAL - sum(o_ask[x] for x in others), tick)
+            bid, ask = min(bid, cap_bid), max(ask, cap_ask)      # (an offer pushed above the max payout is dropped below)
+            if mode == "own" and ctl["take"]:                    # their price beats our PA by enough: trade it
+                if ob is not None and ob >= f + ctl["takeEdge"] - 1e-9:
+                    take = ("ask", ob, min(tb["oBidQty"], ctl["takeMax"], ctl["maxPos"] + pos))
+                elif oa is not None and oa <= f - ctl["takeEdge"] + 1e-9:
+                    take = ("bid", oa, min(tb["oAskQty"], ctl["takeMax"], ctl["maxPos"] - pos))
+            bid, ask = min(bid, hi - tick), max(min(ask, hi), lo + tick)
+        if ctl["take"]:                                          # free money: outside what it can still pay
+            hard = ctl["maxPos"] + ctl["hardExtra"]
+            if ob is not None and ob > hi + 1e-9:
+                take = ("ask", ob, min(tb["oBidQty"], ctl["takeMax"], hard + pos))
+                notes.append(f"bid {ob:g} above max payout {hi:g}: selling")
+            elif oa is not None and oa < lo - 1e-9:
+                take = ("bid", oa, min(tb["oAskQty"], ctl["takeMax"], hard - pos))
+                notes.append(f"offer {oa:g} below min payout {lo:g}: buying")
         if oa is not None:                                       # passive only: never cross anyone
             bid = min(bid, round(oa - tick, 9))
         if ob is not None:
             ask = max(ask, round(ob + tick, 9))
-        if cap_bid is not None:
-            bid = min(bid, cap_bid)
-        if cap_ask is not None:
-            ask = max(ask, cap_ask)
-        # tight pair: centred on fair, slid (keeping the width) to stay behind anyone else's price
-        tb = pricing.round_up(f - w / 2, tick)
-        ta = pricing.round_down(tb + w, tick)
-        if ob is not None and ob >= ta:
-            ta = round(ob + tick, 9)
-            tb = pricing.round_up(ta - w, tick)
-        if oa is not None and oa <= tb:
-            tb = round(oa - tick, 9)
-            ta = pricing.round_down(tb + w, tick)
-        if cap_bid is not None:
-            tb = min(tb, cap_bid)
-        if cap_ask is not None:
-            ta = max(ta, cap_ask)
-        ok = ((ob is None or ob < ta) and (oa is None or oa > tb) and ta - tb <= w + 1e-9
-              and tb <= f + 1e-9 and ta >= f - 1e-9 and tb >= tick and ta <= hi)
-        info[k] = {"fixed": False, "tick": tick, "bid": bid, "ask": ask, "tb": tb, "ta": ta, "tightOk": ok,
-                   "b0": pricing.round_down(f - h, tick), "a0": pricing.round_up(f + h, tick),       # before clamps:
-                   "tb0": pricing.round_up(f - w / 2, tick), "ta0": pricing.round_down(pricing.round_up(f - w / 2, tick) + w, tick)}
-
-    need = n_tight(tops, ctl)
-    tight = {k for k, x in info.items() if x["fixed"] and x["bid"] is not None}
-    for k in sorted((k for k, x in info.items() if not x["fixed"] and x["tightOk"]), key=lambda k: half[k]):
-        if len(tight) >= need:
-            break
-        tight.add(k)
-
-    for k, x in info.items():                                    # pass 2: the orders
-        t, row = st["teams"][k], rows[k]
-        iid, tick, pos = by_team[t], x["tick"], row["pos"]
-        lo, hi = feas.get(t, [0, 100])
-        f = row["fair"]
-        tb_ = tops[iid]
-        ob, oa = o_bid.get(iid), o_ask.get(iid)
-        if x["fixed"]:
-            orders = ([("bid", x["bid"], ctl["topSize"])] if x["bid"] is not None else []) + [("ask", x["ask"], ctl["topSize"])]
-            row.update(orders=orders, bid=x["bid"], ask=x["ask"], tight=k in tight, note=f"payout fixed at {lo}: risk-free quotes")
-            plan[iid] = orders
-            if ctl["take"] and ob is not None and ob > lo + 1e-9:           # someone pays more than it can pay out
-                row["take"] = ("ask", ob, min(tb_["oBidQty"], ctl["takeMax"]))
-            elif ctl["take"] and oa is not None and oa < lo - 1e-9:
-                row["take"] = ("bid", oa, min(tb_["oAskQty"], ctl["takeMax"]))
-            continue
-        bid, ask = (x["tb"], x["ta"]) if k in tight else (x["bid"], x["ask"])
-        if k in tight:
-            row["half"] = (ask - bid) / 2
-        orders, notes = [], []
-        if bid < f + 1e-9:       # bids: above 0, below the most they can still be paid
-            orders += ladder(ctl, f, bid, tick, hi - tick, tick, tops[iid]["oBids"], "bid", ctl["maxPos"] - pos, lo, left)
-        if ask > f - 1e-9:       # offers: above the least they're sure to be paid
-            orders += ladder(ctl, f, ask, lo + tick, hi, tick, tops[iid]["oAsks"], "ask", ctl["maxPos"] + pos, hi, left)
-        for side, px, room in (("bid", bid, ctl["maxPos"] + ctl["hardExtra"] - pos),
-                               ("ask", ask, ctl["maxPos"] + ctl["hardExtra"] + pos)):
-            if any(o[0] == side for o in orders):
-                continue
-            if ctl["twoSided"] and room > 0 and tick <= px <= hi:
-                orders.append((side, px, 1))                     # keep the market two-sided: 1 lot
-                notes.append(f"{side}: 1 lot only (limit)")
-            else:
-                notes.append(f"no {side}" + (" (hard limit)" if ctl["twoSided"] else ""))
-        if pos >= ctl["maxPos"]:
-            notes.insert(0, f"long {pos} >= max position")
-        elif pos <= -ctl["maxPos"]:
-            notes.insert(0, f"short {-pos} >= max position")
-        if left <= 0:
-            notes.insert(0, "budget used up")
-        # someone else's bid at/above where we'd offer (or offer at/below where we'd bid): trade on it now
-        if ctl["take"]:
-            thr_b, thr_a = (x["tb0"], x["ta0"]) if k in tight else (x["b0"], x["a0"])
-            thr_b, thr_a = min(thr_b, f - ctl["takeEdge"]), max(thr_a, f + ctl["takeEdge"])
-            if ob is not None and ob >= thr_a - 1e-9:
-                q = min(tb_["oBidQty"], ctl["takeMax"], ctl["maxPos"] + pos,
-                        int(left // max(hi - ob, 1e-9)) if left > 0 else 0)
-                if q >= 1:
-                    row["take"] = ("ask", ob, int(q))
-            elif oa is not None and oa <= thr_b + 1e-9:
-                q = min(tb_["oAskQty"], ctl["takeMax"], ctl["maxPos"] - pos,
-                        int(left // max(oa - lo, 1e-9)) if left > 0 else 0)
-                if q >= 1:
-                    row["take"] = ("bid", oa, int(q))
+        orders = []
+        if bid > cap_bid + 1e-9 or ask < cap_ask - 1e-9:
+            notes.append("310 check: our price + everyone else's would lock in a profit against us")
+        if bid < 0 or bid > cap_bid + 1e-9:
+            pass
+        elif pos + QUOTE_SIZE <= ctl["maxPos"] and (left > 0 or pos < 0):
+            orders.append(("bid", round(bid, 9), QUOTE_SIZE))
+        else:
+            notes.append("no bid (max position / budget)")
+        if ask <= 0 or ask < cap_ask - 1e-9 or ask > max(hi, ob or 0) + tick:
+            pass
+        elif -pos + QUOTE_SIZE <= ctl["maxPos"] and (left > 0 or pos > 0):
+            orders.append(("ask", round(ask, 9), QUOTE_SIZE))
+        else:
+            notes.append("no offer (max position / budget)")
+        off_sides = blocked.get(iid, set())
+        if off_sides:
+            orders = [o for o in orders if o[0] not in off_sides]
+            if take and take[0] in off_sides:
+                take = None
+            notes.insert(0, f"traded on {'/'.join(sorted(off_sides))}: off until quotes ON")
+        if take and take[2] >= 1:
+            row["take"] = (take[0], take[1], int(take[2]))
         plan[iid] = orders
-        row.update(orders=orders, bid=bid, ask=ask, tight=k in tight, note="; ".join(notes))
+        row.update(orders=orders, bid=bid, ask=ask, width=round(ask - bid, 9), mode=mode, tight=k in tight,
+                   note="; ".join(notes))
     return plan, rows
 
 
@@ -427,20 +469,138 @@ def close_enough(want, live, tol):
     return True
 
 
-def blend(st, theo, tops, by_team, feas, w):
-    """Our theo blended with the market's: w x ours + (1 - w) x market mid (everyone else's best bid
-    and offer, kept inside the payouts still possible), only where both sides are quoted; then
-    scaled so the 16 still add up to 310. Returns (blended, mids)."""
-    mids = np.full(16, np.nan)
-    for k, t in enumerate(st["teams"]):
-        tb = tops.get(by_team.get(t)) if by_team.get(t) else None
-        if tb and tb["oBids"] and tb["oAsks"] and not tb.get("closed"):
-            lo, hi = feas.get(t, [0, 100])
-            mids[k] = min(max((tb["oBids"][0] + tb["oAsks"][0]) / 2, lo), hi)
-    out = np.where(np.isnan(mids), theo, w * theo + (1 - w) * np.nan_to_num(mids))
-    if out.sum() > 0:
-        out = out * tpricer.TOTAL / out.sum()
-    return out, mids
+# --- positions: average price, market value, hedges -----------------------------------------------
+def avg_cost(trades):
+    """trades [(signed qty, price)] oldest first -> (position, average price of the shares still open)."""
+    pos, avg = 0, None
+    for q, p in trades:
+        if pos == 0 or (pos > 0) == (q > 0):
+            avg = p if pos == 0 else (avg * abs(pos) + p * abs(q)) / (abs(pos) + abs(q))
+            pos += q
+        elif abs(q) <= abs(pos):
+            pos += q
+        else:                                      # through zero: the rest opens at this price
+            pos, avg = pos + q, p
+        if pos == 0:
+            avg = None
+    return pos, avg
+
+
+def market_value(pos, o_bid, o_ask, width):
+    """What the position is worth in the market: long -> best bid we could sell into, short -> best
+    offer we could buy back, None if we can't exit. Flat: mid; one-sided: that price +/- width/2."""
+    if pos > 0:
+        return o_bid
+    if pos < 0:
+        return o_ask
+    if o_bid is not None and o_ask is not None:
+        return (o_bid + o_ask) / 2
+    if o_bid is not None:
+        return o_bid + width / 2
+    if o_ask is not None:
+        return o_ask - width / 2
+    return None
+
+
+HEDGE_MIN_CORR = 0.08                    # ignore teams less correlated with ours (group stage: the same half
+                                         # of the bracket passes; semis: the other two semi-finalists pass)
+
+
+def hedges(k, rows, cov, theo, M, n=3):
+    """The n best single-lot trades that take us one share closer to flat on team k: the closing trade
+    itself, or the same direction of risk taken off through a team whose payout moves against ours
+    (long Team1 in group B -> buy its group-mates; short a semi-finalist -> short its opponent first,
+    then the other two). Ranked by edge = what the hedge trade gives away against our fair (best, or
+    least bad, first). lockPnl: when 1 share of k and the hedge pay the same whatever happens, what
+    that pair locks in against k's average price."""
+    r = rows[k]
+    if not r["pos"] or r["avg"] is None:
+        return []
+    s = 1 if r["pos"] > 0 else -1
+    sd = np.sqrt(np.maximum(np.diag(cov), 0))
+    corr = np.array([cov[k, j] / (sd[k] * sd[j]) if sd[k] > 1e-9 and sd[j] > 1e-9 else 0.0 for j in range(len(rows))])
+    others = [j for j, y in enumerate(rows) if j != k and y["iid"] and not y["settled"] and abs(corr[j]) >= HEDGE_MIN_CORR]
+    out = []
+    for j in [k] + others:
+        y = rows[j]
+        if j == k and (not y["iid"] or y["settled"]):
+            continue
+        d = -s if j == k or corr[j] > 0 else s           # sell what moves with us, buy what moves against us
+        price = y["oAsk"] if d > 0 else y["oBid"]
+        if price is None:
+            continue
+        if j == k:
+            lock = s * (price - r["avg"])                  # exact: sell above / buy below what we paid
+        elif M["lockSum" if s == d else "lockDiff"][k, j]:
+            lock = s * float(M["sumVal" if s == d else "diffVal"][k, j]) - s * r["avg"] - d * price
+        else:
+            lock = None
+        out.append({"team": y["team"], "iid": y["iid"], "side": "bid" if d > 0 else "ask", "price": price,
+                    "edge": float(d * (theo[j] - price)), "corr": float(corr[j]) if j != k else 1.0,
+                    "lockPnl": None if lock is None else float(lock)})
+    out.sort(key=lambda h: (-h["edge"], -abs(h["corr"])))
+    return out[:n]
+
+
+# --- session history for the charts (REST events: read-only, no websocket) -----------------------
+class History:
+    MAX = 20000
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.reset(None)
+
+    def reset(self, mid):
+        self.mid, self.seq = mid, 0
+        self.tob, self.trades, self.pa = defaultdict(list), defaultdict(list), defaultdict(list)
+        self.parts = defaultdict(lambda: defaultdict(int))   # contract id -> {other participant: position}
+
+    def others(self, iid):
+        with self.lock:
+            return sorted(([w, q] for w, q in self.parts.get(iid, {}).items() if q), key=lambda x: -abs(x[1]))
+
+    def update(self, mid, view, pa_by_iid):
+        with self.lock:
+            if mid != self.mid:
+                self.reset(mid)
+            me = view.get("you")
+            if view.get("seq", 0) > self.seq:
+                for e in ps.events(mid, self.seq):
+                    if e["seq"] <= self.seq:
+                        continue
+                    self.seq = e["seq"]
+                    at = e.get("at") or time.time() * 1000
+                    for t in e.get("tob", []):
+                        pt = (at, from_px(t["bid"]), from_px(t["ask"]))
+                        lst = self.tob[t["instrumentId"]]
+                        if not lst or lst[-1][1:] != pt[1:]:
+                            lst.append(pt)
+                            del lst[:-self.MAX]
+                    if e.get("type") == "TRADE":
+                        if me in (e.get("buyer"), e.get("seller")):
+                            kind = "ourBuy" if e.get("buyer") == me else "ourSell"
+                        else:
+                            kind = "mktBuy" if e.get("aggressorSide") == "bid" else "mktSell"
+                        self.trades[e["instrumentId"]].append((at, from_px(e["price"]), e["qty"], kind))
+                        for who, sgn in ((e.get("buyer"), 1), (e.get("seller"), -1)):
+                            if who and who != me:
+                                self.parts[e["instrumentId"]][who] += sgn * e["qty"]
+                    elif e.get("type") == "RESET":
+                        self.parts = defaultdict(lambda: defaultdict(int))
+            now = time.time() * 1000
+            for iid, v in pa_by_iid.items():
+                lst = self.pa[iid]
+                if not lst or abs(lst[-1][1] - v) > 1e-6:
+                    lst.append((now, round(float(v), 4)))
+                    del lst[:-self.MAX]
+
+    def dump(self):
+        with self.lock:
+            return {iid: {"tob": self.tob.get(iid, []), "trades": self.trades.get(iid, []), "pa": self.pa.get(iid, [])}
+                    for iid in set(self.tob) | set(self.trades) | set(self.pa)}
+
+
+HISTORY = History()
 
 
 # --- gateway: make the resting orders match the plan, paced under the rate limit -----------------
@@ -452,6 +612,7 @@ class DeskGateway(ps.Gateway):
         self.quoting = {}         # market id -> bool
         self.last = {}            # (market id, contract id) -> when we last changed it
         self.pulled = {}          # market id -> contract ids pulled one by one
+        self.blocked = {}         # market id -> {contract id: {"bid"/"ask"}} sides we were traded on
         self.tol = {}             # market id -> re-quote only if a price is off by more than this
         self.news_pause = 5.0     # seconds out after a market event (tick change, news ...)
         self.takes = {}           # market id -> {contract id: (side, price, qty)} crossing our prices
@@ -465,6 +626,7 @@ class DeskGateway(ps.Gateway):
         super().pump()                                      # news / market events pull everything ...
         for mid, c in list(self.conns.items()):             # ... but we only sit out NEWS_PAUSE here (not 60 s):
             c["paused_until"] = min(c["paused_until"], time.time() + self.news_pause)   # results have their own button
+            self.on_fills(mid, c)
         for mid, c in list(self.conns.items()):
             if not (self.enabled and self.quoting.get(mid)):
                 continue
@@ -479,6 +641,33 @@ class DeskGateway(ps.Gateway):
                 except Exception as e:
                     print("quote error:", e)
 
+    def on_fills(self, mid, c):
+        """Someone traded on one of our resting orders: that side goes off (the rest of it pulled
+        now) until the trader switches the market's quotes back on."""
+        book = c["book"]
+        new, c["seen"] = book.fills[c.get("seen", 0):], len(book.fills)
+        for f in new:
+            if f["aggressor"]:
+                continue
+            side = "bid" if f["qty"] > 0 else "ask"
+            self.blocked.setdefault(mid, {}).setdefault(f["iid"], set()).add(side)
+            man = self.manual.get(mid, set())
+            for oid, o in list(book.my_orders.items()):
+                if o["iid"] == f["iid"] and o["side"] == side and oid not in man:
+                    c["fm"].cancel(oid)
+            print(f"{time.strftime('%H:%M:%S')}  {mid}: traded on our {side} in {book.name(f['iid'])} - that side off until quotes ON")
+
+    def all_on(self, mid):
+        self.pulled.pop(mid, None)
+        return self.unblock(mid)
+
+    def unblock(self, mid, iid=None):
+        if iid is None:
+            self.blocked.pop(mid, None)
+        else:
+            self.blocked.get(mid, {}).pop(iid, None)
+        return {"ok": True}
+
     def reconcile(self, mid, c):
         """Make our resting orders match the plan, within the rate budget. Contracts with nothing
         resting go first, then the longest-untouched, so every market gets quoted; a contract
@@ -487,6 +676,7 @@ class DeskGateway(ps.Gateway):
         tol = self.tol.get(mid, 0.0)
         live_by = defaultdict(dict)
         manual = self.manual.get(mid, set())
+        blocked = self.blocked.get(mid, {})
         for oid, o in book.my_orders.items():
             if oid not in manual:                           # manual orders are the trader's, not ours to move
                 live_by[o["iid"]][oid] = o
@@ -495,6 +685,7 @@ class DeskGateway(ps.Gateway):
         for iid, want in items:
             if now - self.last.get((mid, iid), 0) < 0.5:
                 continue
+            want = [o for o in want if o[0] not in blocked.get(iid, ())]     # a side we were traded on stays off
             live = live_by.get(iid, {})
             if close_enough(want, live.values(), tol):
                 continue
@@ -537,7 +728,7 @@ class DeskGateway(ps.Gateway):
         return {"ok": True}
 
     def pull_one(self, mid, iid, off):
-        """Pull (or re-allow) one contract's quotes, straight away."""
+        """Pull (or re-allow) one contract's quotes, straight away. Re-allowing clears its traded-on sides."""
         p = self.pulled.setdefault(mid, set())
         if off:
             p.add(iid)
@@ -547,17 +738,12 @@ class DeskGateway(ps.Gateway):
                 print(f"{time.strftime('%H:%M:%S')}  {mid}: pulled quotes on {self.conn(mid)['book'].name(iid)}")
         else:
             p.discard(iid)
-        return {"ok": True}
-
-    def resume(self, mid):
-        """End a news pause now (news pulls everything and waits NEWS_PAUSE_SECS)."""
-        if mid in self.conns:
-            self.conns[mid]["paused_until"] = 0.0
+            self.unblock(mid, iid)
         return {"ok": True}
 
     def manual_quote(self, mid, iid, bid, ask, qty):
         """A resting bid and/or offer typed on the page. The quoter leaves these alone (it only
-        manages its own orders); KILL, Result incoming and a contract's pull button still cancel them."""
+        manages its own orders); quotes OFF and a contract's off button still cancel them."""
         if not self.enabled:
             return {"ok": False, "reason": "paper mode: restart with --trade to send orders"}
         c = self.conn(mid)
@@ -587,14 +773,6 @@ class DeskGateway(ps.Gateway):
         print(f"{time.strftime('%H:%M:%S')}  {mid}: MANUAL QUOTE {book.name(iid)} {bid} / {ask} x{qty} -> filled {filled}")
         return {"ok": True, "filled": filled}
 
-    def orders(self, mid):
-        """Our resting orders (from the live book), marked manual or quoter."""
-        if not self.enabled or mid not in self.conns:
-            return []
-        b, man = self.conns[mid]["book"], self.manual.get(mid, set())
-        return [{"oid": oid, "iid": o["iid"], "name": b.name(o["iid"]), "side": o["side"], "price": o["price"],
-                 "qty": o["qty"], "manual": oid in man} for oid, o in b.my_orders.items()]
-
     def long_short(self, mid, book, iid, side):
         """How long (side bid) / short (side ask) we already are, taking the worse of the live
         position from our fills and the exchange's last snapshot (a conductor reset, fills elsewhere)."""
@@ -606,7 +784,8 @@ class DeskGateway(ps.Gateway):
         fm, now = c["fm"], time.time()
         for iid, (side, price, qty) in self.takes.get(mid, {}).items():
             key = (mid, iid, side, round(price, 6))
-            if now - self.took.get(key, 0) < 2.0 or iid in self.pulled.get(mid, set()) or fm.budget() < 2:
+            if (now - self.took.get(key, 0) < 2.0 or iid in self.pulled.get(mid, set()) or fm.budget() < 2
+                    or side in self.blocked.get(mid, {}).get(iid, ())):
                 continue
             qty = min(qty, self.hard.get(mid, 10 ** 9) - self.long_short(mid, c["book"], iid, side))
             if qty < 1:
@@ -637,89 +816,121 @@ class DeskGateway(ps.Gateway):
 
 
 gateway = None
-STATUS = {"rows": [], "tops": {}, "error": None, "view": None, "at": 0}
+STATUS = {"rows": [], "tops": {}, "error": None, "view": None, "at": 0, "q": None}
 
 
-def market_fairs(st, M, ctl, q, half, base):
-    """Deflected fairs. Own move = DEFLECTION x position x half-spread + any manual deflection typed on
-    the page (per team, in price); propagated to every team through
-    the strength Jacobian (worked out once per setup in the background; own-team-only until then).
-    Kept inside the payouts each team can still get. Returns (fair, propagated?)."""
-    theo = base
-    move = -ctl["deflection"] * q * half                    # from our position ...
-    move = move + np.array([ctl["manualDefl"].get(t, 0.0) for t in st["teams"]])   # ... plus the trader's own
-    if not np.any(move):
-        return theo, True
-    with LOCK:
-        J = MODEL.get("J") if MODEL.get("key") == M["key"] else None
-    fair = theo + (tpricer.deflect_linear(J, {k: float(m) for k, m in enumerate(move)}) if J is not None else move)
-    lo = np.array([M["feasible"].get(t, [0, 100])[0] for t in st["teams"]], dtype=float)
-    hi = np.array([M["feasible"].get(t, [0, 100])[1] for t in st["teams"]], dtype=float)
-    return np.clip(fair, lo, hi), J is not None
+def setup(body):
+    """Teams (seed order), groups, strength, contract mapping. A team keeps its seed's results,
+    edits, pulls and layout when it's renamed (Team1 -> Australia): everything follows the new name."""
+    st = tpricer.load_state()
+    old = list(st["teams"])
+    new = [str(t).strip() for t in body.get("teams", old)]
+    ren = dict(zip(old, new)) if len(new) == len(old) else {}
+    rn = lambda t: ren.get(t, t)
+    if st.get("results"):
+        same = {g: [rn(t) for t in st["groups"][g]] for g in st["groups"]} == body.get("groups", {g: [rn(t) for t in st["groups"][g]] for g in st["groups"]})
+        if not same:
+            raise ValueError("results are entered: teams can be renamed, but not moved between or within groups")
+    res = {}
+    for mid, r in st.get("results", {}).items():
+        r = {**r, **{f: rn(r[f]) for f in ("a", "b", "winner") if r.get(f)}}
+        if ":" in mid:
+            mid = f"{mid.split(':')[0]}:{r['a']}-{r['b']}" if r.get("a") else mid
+        res[mid] = r
+    st["results"] = res
+    st["ratings"] = {rn(t): v for t, v in (st.get("ratings") or {}).items()}
+    for k in ("teams", "groupMode", "groups", "pBeat", "goals", "ratings"):
+        if k in body:
+            st[k] = body[k]
+    tpricer.save_state(st)
+    if new != old:
+        ctl = controls()
+        lay = ctl["layout"]
+        save_controls({**{k: {rn(t): v for t, v in ctl[k].items()} for k in ("theoAdj", "paAdj", "paKeep", "edgeAdj", "deflPos", "deflAmt")},
+                       "off": [rn(t) for t in ctl["off"]], "hidden": [rn(t) for t in ctl["hidden"]],
+                       "mapping": {c: rn(t) for c, t in ctl["mapping"].items()},
+                       "layout": {**lay, "rows": {g: [rn(t) for t in ts] for g, ts in (lay.get("rows") or {}).items()}}})
+    if "mapping" in body:
+        save_controls({"mapping": body["mapping"], "mappingOk": True})
+    model()
 
 
-def propagate(st, M):
-    """Background job, once per setup/result: how every theo moves when one team's strength moves."""
-    try:
-        _, J = tpricer.jacobian(st, n=50000, h=0.2, post=M["post"])
-        with LOCK:
-            if MODEL.get("key") == M["key"]:
-                MODEL["J"] = J
-    except Exception:
-        traceback.print_exc()
+def current_book(ctl):
+    """(our positions, other market makers' mids) from the last tick, or flat / none without a market."""
+    if ctl["market"] and STATUS.get("q") is not None:
+        return STATUS["q"], STATUS.get("mkt")
+    return np.zeros(16), None
 
 
-def tick(job=None):
-    """Read the book, work out the plan, hand it to the gateway. Returns the propagation job."""
+def apply_results(results):
+    """Enter / clear results ({id: result or None}). New information: our theo edits go (the result
+    replaces them), each team's PA keeps its gap to theo, and every market starts wide again."""
+    st, M = model()
+    ctl = controls()
+    _, mkt = current_book(ctl)
+    old = fairs(st, M, ctl, mkt)
+    for k, r in results.items():
+        if r is None:
+            st["results"].pop(k, None)
+        else:
+            st["results"][k] = r
+    tpricer.save_state(st)
+    st, M = model()
+    new = fairs(st, M, {**ctl, "theoAdj": {}, "paAdj": {}, "paKeep": {}}, mkt)
+    keep = (old["pa"] - old["theo"]) - (new["pa"] - new["theo"])
+    known = np.array([new["base"][k] == M["feasible"][t][0] == M["feasible"][t][1] for k, t in enumerate(st["teams"])])
+    save_controls({"theoAdj": {}, "paAdj": {}, "edgeAdj": {}, "wideSince": time.time(),
+                   "paKeep": {t: float(keep[k]) for k, t in enumerate(st["teams"]) if abs(keep[k]) > 1e-9 and not known[k]}})
+
+
+def tick():
+    """Read the book, work out the plan, hand it to the gateway."""
     ctl = controls()
     mid = ctl["market"]
     if not mid:
-        return job
+        return
     st, M = model()
     view = ps.snapshot(mid, max_age=0.5)
     tops = book_tops(view)
     names = {i["id"]: i["name"] for i in view["instruments"]}
-    by_team = {ctl["mapping"][n]: iid for iid, n in names.items() if n in ctl["mapping"]}
+    by_team = {ctl["mapping"][n]: iid for iid, n in names.items() if n in ctl["mapping"] and ctl["mapping"][n] in st["teams"]}
     positions = {i["id"]: i["position"] for i in view["instruments"]}
     q = np.array([positions.get(by_team.get(t), 0) for t in st["teams"]], dtype=float)
+    mkt = market_mids(st, tops, by_team, view)
     model_half = ctl["k"] * M["sim"]["sigmaNext"] + ctl["c"]
-    tight = tight_teams(st, model_half, by_team, tops, M["feasible"], ctl)
-    half = quoted_half(st, model_half, tight, ctl)
-    blended, mids = blend(st, M["sim"]["theo"], tops, by_team, M["feasible"], ctl["ourWeight"])
-    fair, done = market_fairs(st, M, ctl, q, half, blended)
-    if MODEL.get("J") is None and (job is None or not job.is_alive()):
-        job = threading.Thread(target=propagate, args=(st, M), daemon=True)
-        job.start()
+    width, _, _ = market_widths(st, M["feasible"], model_half, tops, by_team, ctl, time.time())
+    ctl = {**ctl, "deflAmt": update_defl_book(st, ctl, q, width)}
+    pa = fairs(st, M, ctl, mkt)["pa"]
     lim = view.get("positionLimits") or {}
     if lim.get("enabled"):                              # the exchange's own position limit wins
         ctl = {**ctl, "maxPos": min(ctl["maxPos"], int(lim.get("defaultLimit", ctl["maxPos"])))}
-    plan, rows = plan_quotes(st, M["feasible"], fair, model_half, tops, by_team, positions, ctl)
-    for k, r in enumerate(rows):
-        r["mid"] = None if np.isnan(mids[k]) else float(mids[k])
-        r["blend"] = float(blended[k])
+    blocked = {iid: set(s) for iid, s in gateway.blocked.get(mid, {}).items()} if gateway else {}
+    plan, rows = plan_quotes(st, M["feasible"], pa, model_half, tops, by_team, positions, ctl, blocked)
     ok = not check_mapping(ctl["mapping"], st["teams"], list(names.values()))   # Quoting ON is the confirmation
     if gateway.enabled:
         takes = {r["iid"]: r["take"] for r in rows if r.get("take") and ok}
         gateway.call(gateway.set_plan, mid, plan if ok else {}, bool(ctl["quoting"] and ok), ctl["requoteMin"],
-                     ctl["newsPause"], takes, ctl["maxPos"] + (ctl["hardExtra"] if ctl["twoSided"] else 0), positions)
-    STATUS.update(rows=rows, tops=tops, view=view, byTeam=by_team, propagated=done, error=None, at=time.time(),
-                  risk=risk_used(st, M["feasible"], fair, by_team, positions))
-    return job
+                     ctl["newsPause"], takes, ctl["maxPos"] + ctl["hardExtra"], positions)
+    try:
+        HISTORY.update(mid, view, {by_team[t]: pa[k] for k, t in enumerate(st["teams"]) if t in by_team})
+    except ApiError as e:
+        print("history:", e)
+    STATUS.update(rows=rows, tops=tops, view=view, byTeam=by_team, error=None, at=time.time(), q=q, mkt=mkt,
+                  blocked=blocked, risk=risk_used(st, M["feasible"], pa, by_team, positions))
 
 
 def brain():
-    """Every second."""
-    job = None
+    """Twice a second."""
     while True:
         t0 = time.time()
         try:
-            job = tick(job)
+            tick()
         except ApiError as e:
             STATUS["error"] = str(e)
         except Exception as e:
             traceback.print_exc()
             STATUS["error"] = f"{type(e).__name__}: {e}"
-        time.sleep(max(0.2, 1.0 - (time.time() - t0)))
+        time.sleep(max(0.1, 0.5 - (time.time() - t0)))
 
 
 def fixtures(st, slot):
@@ -730,56 +941,42 @@ def fixtures(st, slot):
             for p, q in rnd:
                 a, b = st["groups"][g][p], st["groups"][g][q]
                 mid = f"{g}:{a}-{b}"
-                out.append({"id": mid, "stage": f"Group {g} · R{rnd_i + 1}", "a": a, "b": b, "res": res.get(mid)})
-    names = {"C": "Crossover", "Q": "Quarter-final", "S": "Semi-final", "F": "Final", "T": "3rd place"}
+                out.append({"id": mid, "group": g, "pa": p, "pb": q, "a": a, "b": b, "res": res.get(mid)})
     src = {m: ("winner " + x if x[0] in "CQ" else x, "winner " + y if y[0] in "CQ" else y)
            for m, x, y in tpricer.CROSS + tpricer.QF + tpricer.SF}
     src.update(F=("winner SF1", "winner SF2"), T=("loser SF1", "loser SF2"))
     for mid in tpricer.KO_ORDER:
         a, b = slot.get(mid, [None, None])
-        out.append({"id": mid, "stage": f"{names[mid[0]]} {mid}", "a": a, "b": b, "res": res.get(mid), "ko": True,
-                    "srcA": src[mid][0], "srcB": src[mid][1]})
+        out.append({"id": mid, "a": a, "b": b, "res": res.get(mid), "ko": True, "srcA": src[mid][0], "srcB": src[mid][1]})
     return out
 
 
-def instruments(view, ctl, fairs):
-    """Every instrument in the market straight from the API (mapped or not): book, our orders, position, P&L."""
-    names = {i["id"]: i["name"] for i in view["instruments"]}
-    cash = defaultdict(float)
-    for t in view.get("myTrades", []):
-        cash[t["instrumentId"]] -= t["signedQty"] * from_px(t["price"])
-    out = []
+def instruments(view):
+    """Per contract id: book levels (ours marked), position, average price of the open shares, cash."""
+    out = {}
+    trades = defaultdict(list)
+    for t in sorted(view.get("myTrades", []), key=lambda t: t.get("seq", 0)):
+        trades[t["instrumentId"]].append((t["signedQty"], from_px(t["price"])))
     for inst in view["instruments"]:
-        iid, pos = inst["id"], inst["position"]
+        iid = inst["id"]
 
         def side(levels):
-            return [{"price": from_px(l["price"]), "qty": l["qty"],
-                     "mine": sum(o["qty"] for o in l["orders"] if o.get("mine"))} for l in levels]
-        bids, asks = side(inst["bids"]), side(inst["asks"])
-        settle = from_px(inst.get("settlementValue"))
-        mid = (bids[0]["price"] + asks[0]["price"]) / 2 if bids and asks else None
-        fair = fairs.get(iid)
-        last = from_px(inst.get("lastTrade"))
-        mark = lambda m: None if m is None else cash[iid] + pos * m
-        # mark to market: settlement, else the market mid, else the last trade, else our fair
-        mtm_px, mtm_src = next(((p, s) for p, s in ((settle, "settled"), (mid, "mid"), (last, "last"), (fair, "fair"))
-                                if p is not None), (None, ""))
-        out.append({"iid": iid, "name": inst["name"], "team": ctl["mapping"].get(inst["name"]),
-                    "mtmPx": mtm_px, "mtmSrc": mtm_src, "pnlMtm": mark(mtm_px) if pos or cash[iid] else 0.0,
-                    "bids": bids[:3], "asks": asks[:3], "last": from_px(inst.get("lastTrade")),
-                    "myBids": [(l["price"], l["mine"]) for l in bids if l["mine"]],
-                    "myAsks": [(l["price"], l["mine"]) for l in asks if l["mine"]],
-                    "pos": pos, "avg": -cash[iid] / pos if pos else None, "cash": cash[iid],
-                    "fair": fair, "mid": mid, "settle": settle, "closed": inst.get("closed"),
-                    "pnlFair": mark(settle if settle is not None else fair),
-                    "pnlMid": mark(settle if settle is not None else mid)})
-    trades = [{"at": t.get("at"), "name": names.get(t["instrumentId"], t["instrumentId"]), "qty": t["signedQty"],
-               "price": from_px(t["price"])} for t in view.get("myTrades", [])][::-1][:20]
-    reb = (view.get("rebate") or {})
-    return {"rows": out, "trades": trades, "units": view.get("units", ""), "myPnl": view.get("myPnl"),
-            "exchangeMtm": from_px(view.get("myMtm")),
-            "limits": view.get("positionLimits"), "rebate": {"enabled": reb.get("enabled"), "width": from_px(reb.get("width")),
-                                                            "coverage": reb.get("coveragePct"), "mine": reb.get("mine")}}
+            return [[from_px(l["price"]), l["qty"], sum(o["qty"] for o in l["orders"] if o.get("mine"))] for l in levels[:5]]
+        last_hit = max((t["at"] for t in view.get("myTrades", []) if t["instrumentId"] == iid and not t.get("aggressor")), default=None)
+        _, avg = avg_cost(trades[iid])
+        out[iid] = {"name": inst["name"], "bids": side(inst["bids"]), "asks": side(inst["asks"]), "pos": inst["position"],
+                    "avg": avg, "cash": -sum(q * p for q, p in trades[iid]), "settle": from_px(inst.get("settlementValue")),
+                    "closed": bool(inst.get("closed")), "hitAt": last_hit, "last": from_px(inst.get("lastTrade"))}
+    return out
+
+
+def stage(st):
+    res = st.get("results", {})
+    if not res and all(re.fullmatch(r"Team\d+", t) for t in st["teams"]):
+        return "setup"
+    if sum(1 for m, r in res.items() if ":" in m and r.get("ga") is not None) < 24:
+        return "groups"
+    return "done" if res.get("F", {}).get("winner") and res.get("T", {}).get("winner") else "knockout"
 
 
 def state_json():
@@ -791,55 +988,69 @@ def state_json():
     srows = {r["team"]: r for r in STATUS.get("rows") or []} if view else {}
     tops = STATUS.get("tops") or {}
     by_team = (STATUS.get("byTeam") or {}) if view else {}
-    half = ctl["k"] * sim["sigmaNext"] + ctl["c"]
-    insts = instruments(view, ctl, {r["iid"]: r["fair"] for r in srows.values() if r.get("iid") and r.get("fair") is not None}) if view else None
+    insts = instruments(view) if view else {}
+    F = fairs(st, M, ctl, STATUS.get("mkt") if view else None)
+    theo, pa = F["theo"], F["pa"]
+    seeds = tpricer.seed_values(st)
+    table = tpricer.standings(st)
+    blocked = STATUS.get("blocked") or {}
     rows = []
     for k, t in enumerate(st["teams"]):
-        r = srows.get(t, {})
-        iid = by_team.get(t)
-        tb = tops.get(iid, {})
-        pos = r.get("pos", 0)
-        im = next((x for x in (insts or {}).get("rows", []) if x["iid"] == iid), None) if iid else None
+        r, iid = srows.get(t, {}), by_team.get(t)
+        im, tb = insts.get(iid, {}), tops.get(iid, {})
+        lo, hi = M["feasible"].get(t, [0, 100])
+        if im.get("settle") is not None:                 # the exchange has settled it: that's the value
+            lo = hi = im["settle"]
+            for x in ("base", "our", "theo", "pa"):     # (fresh arrays from fairs(): safe to change here)
+                F[x][k] = lo
+        o_bid = tb["oBids"][0] if tb.get("oBids") else None
+        o_ask = tb["oAsks"][0] if tb.get("oAsks") else None
+        pos = im.get("pos", 0)
+        mv = im["settle"] if im.get("settle") is not None else market_value(pos, o_bid, o_ask, ctl["rebateWidth"])
+        mark = mv if mv is not None else float(theo[k])
         rows.append({"team": t, "seed": k + 1, "group": next(g for g in tpricer.GROUPS if t in st["groups"][g]),
-                     "nudge": st["nudges"].get(t, 0), "S": float(sim["mean"][k]), "sdS": float(sim["sdS"][k]),
-                     "finish": [float(x) for x in sim["finish"][k]], "pQF": float(sim["pQF"][k]),
-                     "pSF": float(sim["pSF"][k]), "pF": float(sim["pF"][k]), "pWin": float(sim["pWin"][k]),
-                     "theo": float(sim["theo"][k]), "sd": float(sim["sd"][k]), "sigmaNext": float(sim["sigmaNext"][k]),
-                     "half": r.get("half", float(half[k])), "tight": bool(r.get("tight")),
-                     "mid": r.get("mid"), "blend": r.get("blend"), "note": r.get("note", ""), "take": r.get("take"),
-                     "fair": r.get("fair"), "range": M["feasible"].get(t),
-                     "pos": pos, "iid": iid, "contract": next((n for n, x in ctl["mapping"].items() if x == t), None),
-                     "orders": r.get("orders", []), "why": r.get("why", ""), "ourBid": r.get("bid"), "ourAsk": r.get("ask"),
-                     "bid": tb.get("bid"), "ask": tb.get("ask"), "tick": tb.get("tick"),
-                     "pnl": im["pnlMtm"] if im else None})
+                     "iid": iid, "contract": im.get("name"), "range": [lo, hi], "known": lo == hi,
+                     "settled": lo == hi or bool(im.get("settle") is not None or im.get("closed")),
+                     "base": float(F["base"][k]), "our": float(F["our"][k]), "theo": float(theo[k]), "pa": float(pa[k]),
+                     "nMM": int(F["n"][k]), "mktMid": None if np.isnan(F["mid"][k]) else float(F["mid"][k]),
+                     "mode": r.get("mode"), "width": r.get("width"), "others": HISTORY.others(iid) if iid else [],
+                     "edge": None if r.get("width") is None else r["width"] / 2, "edgeEdited": t in ctl["edgeAdj"],
+                     "seedVal": float(seeds[k]), "seedEdited": t in (st.get("ratings") or {}),
+                     "hidden": t in ctl["hidden"],
+                     "theoEdited": t in ctl["theoAdj"], "paEdited": t in ctl["paAdj"],
+                     "pWin": float(sim["pWin"][k]), "sd": float(sim["sd"][k]), "rank": table.get(t),
+                     "pos": pos, "avg": im.get("avg"), "mktValue": mv, "pnl": im.get("cash", 0.0) + pos * mark if im else 0.0,
+                     "pnlMarked": mv is not None, "bids": im.get("bids", []), "asks": im.get("asks", []),
+                     "oBid": o_bid, "oAsk": o_ask, "off": t in ctl["off"], "blocked": sorted(blocked.get(iid, ())),
+                     "hitAt": im.get("hitAt"), "ourBid": r.get("bid"), "ourAsk": r.get("ask"), "tight": bool(r.get("tight")),
+                     "note": r.get("note") or r.get("why", ""), "last": im.get("last")})
+    cov = sim["cov"]
+    for k, r in enumerate(rows):
+        r["hedges"] = hedges(k, rows, cov, theo, M) if r["pos"] else []
     auto, auto_probs = auto_map(names, st["teams"]) if names else ({}, [])
     cover = None
-    if insts:                                            # what's actually resting right now vs the rebate rule
-        op = [r for r in insts["rows"] if not r["closed"] and r["settle"] is None]
-        two = [r for r in op if r["myBids"] and r["myAsks"]]
-        within = [r for r in two if min(p for p, _ in r["myAsks"]) - max(p for p, _ in r["myBids"]) <= ctl["rebateWidth"] + 1e-9]
-        cover = {"open": len(op), "twoSided": len(two), "within": len(within),
-                 "need": math.ceil(ctl["coverage"] * len(op) - 1e-9), "planned": sum(1 for r in srows.values() if r.get("tight"))}
-    my_orders = gateway.call(gateway.orders, ctl["market"], timeout=2) if gateway and gateway.enabled and ctl["market"] else []
-    return {"instruments": insts, "cover": cover, "myOrders": my_orders if isinstance(my_orders, list) else [],"state": {k: st[k] for k in ("teams", "groupMode", "groups", "pBeat", "goals", "kappa", "nudges",
-                                          "confidence", "results", "sims", "ratings")},
-            "controls": ctl, "rows": rows, "readouts": M["readouts"], "n": sim["n"], "simMs": M["ms"],
-            "sumTheo": float(sim["theo"].sum()), "presets": tpricer.PRESETS,
+    if view:                                             # what's actually resting right now vs the MM requirement
+        op = [r for r in rows if r["iid"] and not insts[r["iid"]]["closed"] and insts[r["iid"]]["settle"] is None]
+        def mine(r, s):
+            return [p for p, _, m in r[s] if m]
+        within = [r for r in op if mine(r, "bids") and mine(r, "asks")
+                  and min(mine(r, "asks")) - max(mine(r, "bids")) <= ctl["rebateWidth"] + 1e-9]
+        cover = {"open": len(op), "within": len(within), "need": min(ctl["nTight"], len(op)),
+                 "exchange": (view.get("rebate") or {}).get("mine")}
+    return {"rows": rows, "controls": ctl, "stage": stage(st), "cover": cover,
+            "state": {k: st[k] for k in ("teams", "groups", "results", "pBeat", "goals", "ratings")},
+            "fixtures": fixtures(st, M["slots"]), "presets": tpricer.PRESETS, "simMs": M["ms"],
             "api": {"read": bool(view) and not STATUS.get("error") and time.time() - STATUS["at"] < 5,
                     "orders": bool(gateway and gateway.enabled and ctl["market"] in gateway.conns)},
             "contracts": names, "autoMap": auto, "autoProblems": auto_probs,
             "mappingProblems": check_mapping(ctl["mapping"], st["teams"], names) if names else ["no market loaded"],
-            "unmappedTeams": unmapped_teams(ctl["mapping"], st["teams"], names) if names else [],
-            "propagated": STATUS.get("propagated", True), "error": STATUS.get("error") if ctl["market"] else None,
+            "error": STATUS.get("error") if ctl["market"] else None,
             "trading": bool(gateway and gateway.enabled),
             "quotingLive": bool(gateway and gateway.quoting.get(ctl["market"])),
-            "pausedFor": max(0.0, gateway.conns[ctl["market"]]["paused_until"] - time.time())
-                         if gateway and ctl["market"] in gateway.conns else 0.0,
-            "risk": STATUS.get("risk", 0.0) if view else 0.0,
             "market": view["name"] if view else None, "status": view.get("status") if view else None,
-            "age": round(time.time() - STATUS["at"], 1) if STATUS["at"] else None,
-            "fixtures": fixtures(st, M["slots"]),
-            "totalPnl": sum(r["pnlMtm"] or 0 for r in insts["rows"]) if insts else 0}
+            "units": view.get("units", "") if view else "", "now": time.time() * 1000,
+            "narrowLeft": max(0.0, ctl["wideSince"] + ctl["narrowSecs"] - time.time()),
+            "totalPnl": float(sum(r["pnl"] for r in rows if r["iid"]))}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -851,26 +1062,24 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def allowed(self, url=None):
+        """This laptop: always (POSTs still need the page token). Shared (--share): anyone on the
+        network with the link, which carries the token (?k=...); the page then sends it as a header."""
+        token = self.headers.get("X-Trade-Token") or (parse_qs(url.query).get("k", [""])[0] if url else "")
+        if self.client_address[0] in ("127.0.0.1", "::1"):
+            return self.headers.get("Host") in ALLOWED_HOSTS or token == TOKEN
+        return SHARE and secrets.compare_digest(token, TOKEN)
+
     def do_GET(self):
         url = urlparse(self.path)
-        if url.path == "/api/state":
+        if not self.allowed(url):
+            return self.send_json({"ok": False, "reason": "forbidden: use the link the desk printed (it has ?k=...)"}, 403)
+        if url.path in ("/api/state", "/api/history"):
             try:
-                return self.send_json(state_json())
+                return self.send_json(state_json() if url.path == "/api/state" else HISTORY.dump())
             except Exception as e:
                 traceback.print_exc()
                 return self.send_json({"error": f"{type(e).__name__}: {e}"}, 500)
-        m = re.fullmatch(r"/static/([a-z0-9_]+\.(js|css))", url.path)
-        if m:                                   # the page's parts: core, sidebar and one file per tab
-            path = os.path.join(STATIC_DIR, m.group(1))
-            if not os.path.isfile(path):
-                return self.send_error(404)
-            with open(path, "rb") as f:
-                body = f.read()
-            self.send_response(200)
-            self.send_header("Content-Type", "text/javascript; charset=utf-8" if m.group(2) == "js" else "text/css; charset=utf-8")
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            return self.wfile.write(body)
         if url.path in ("/", "/index.html"):
             with open(HTML_FILE, encoding="utf-8") as f:
                 body = f.read().replace("__TRADE_TOKEN__", TOKEN).encode()
@@ -882,7 +1091,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_error(404)
 
     def do_POST(self):
-        if self.headers.get("Host") not in ALLOWED_HOSTS or self.headers.get("X-Trade-Token") != TOKEN:
+        if not self.allowed() or self.headers.get("X-Trade-Token") != TOKEN:
             return self.send_json({"ok": False, "reason": "forbidden"}, 403)
         try:
             body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
@@ -890,54 +1099,79 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"ok": False, "reason": "bad request"}, 400)
         path = urlparse(self.path).path
         mid = controls()["market"]
+        live = gateway.enabled and mid
         try:
-            if path == "/api/setup":                       # teams, groups, strength
-                st = tpricer.load_state()
-                if "teams" in body and st.get("results") and body["teams"] != st["teams"]:
-                    raise ValueError("results are entered: clear them before changing the teams")
-                for k in ("teams", "groupMode", "groups", "pBeat", "goals", "kappa", "nudges", "confidence", "sims", "ratings"):
-                    if k in body:
-                        st[k] = body[k]
-                tpricer.save_state(st)
-                model()
+            if path == "/api/setup":                       # teams (seed order), groups, strength, contract mapping
+                with STATE_LOCK:
+                    setup(body)
                 return self.send_json({"ok": True})
-            if path == "/api/result":                      # enter / clear a match result
-                st = tpricer.load_state()
-                r = body.get("result")
-                if r is None:
-                    st["results"].pop(body["id"], None)
-                else:
-                    st["results"][body["id"]] = r
-                tpricer.save_state(st)
-                model()
+            if path == "/api/results":                     # {id: result or null}, several at once
+                with STATE_LOCK:
+                    apply_results(body.get("results") or {})
                 return self.send_json({"ok": True})
-            if path == "/api/pull":                        # one team's quotes off / back on
+            if path == "/api/seed":                        # {team, value (None = back to its seed position)}
+                with STATE_LOCK:
+                    st = tpricer.load_state()
+                    team, v = str(body["team"]), body.get("value")
+                    if team not in st["teams"]:
+                        raise ValueError(f"unknown team {team}")
+                    r = dict(st.get("ratings") or {})
+                    if v is None or abs(float(v) - (st["teams"].index(team) + 1)) < 1e-9:
+                        r.pop(team, None)
+                    elif not 0.55 <= float(v) <= 16.45:
+                        raise ValueError("seed must be between 0.6 and 16.4")
+                    else:
+                        r[team] = round(float(v), 4)
+                    st["ratings"] = r
+                    tpricer.save_state(st)
+                model()                                    # re-price now (a second or two)
+                return self.send_json({"ok": True})
+            if path == "/api/hide":                        # minimise / restore a market: {team, hidden}
+                with STATE_LOCK:
+                    h = set(controls()["hidden"])
+                    save_controls({"hidden": (h | {str(body["team"])}) if body.get("hidden") else (h - {str(body["team"])})})
+                return self.send_json({"ok": True})
+            if path == "/api/pull":                        # one team's quotes off / back on (on = clears traded-on sides)
                 team, off = str(body["team"]), bool(body.get("off", True))
-                ctl = controls()
-                save_controls({"off": (set(ctl["off"]) | {team}) if off else (set(ctl["off"]) - {team})})
+                with STATE_LOCK:
+                    ctl = controls()
+                    save_controls({"off": (set(ctl["off"]) | {team}) if off else (set(ctl["off"]) - {team})})
                 iid = (STATUS.get("byTeam") or {}).get(team)
-                if gateway.enabled and mid and iid:
+                if live and iid:
                     return self.send_json(gateway.call(gateway.pull_one, mid, iid, off))
                 return self.send_json({"ok": True})
-            if path == "/api/resume":
-                if gateway.enabled and mid:
-                    return self.send_json(gateway.call(gateway.resume, mid))
-                return self.send_json({"ok": True})
-            if path == "/api/controls":
-                return self.send_json({"ok": True, "controls": save_controls(body.get("set") or {})})
-            if path in ("/api/incoming", "/api/kill"):     # pull everything NOW
-                save_controls({"quoting": False})
-                if gateway.enabled and mid:
+            if path == "/api/allquotes":                   # everything on (clears every pull) / everything off
+                on = bool(body.get("on"))
+                save_controls({"quoting": on, **({"off": []} if on else {})})
+                if live:
+                    if on:
+                        return self.send_json(gateway.call(gateway.all_on, mid))
                     return self.send_json(gateway.call(gateway.stop, mid))
                 return self.send_json({"ok": True})
+            if path == "/api/theo":                        # {team, kind theo|pa|edge, value (None = undo the edit)}
+                with STATE_LOCK:
+                    st, M = model()
+                    ctl = controls()
+                    team, kind = str(body["team"]), body.get("kind")
+                    k = st["teams"].index(team)
+                    F = fairs(st, M, ctl, current_book(ctl)[1])
+                    key = {"theo": "theoAdj", "pa": "paAdj", "edge": "edgeAdj"}[kind]   # theo: OUR fair (before the market blend)
+                    adj = dict(ctl[key])
+                    if body.get("value") is None:
+                        adj.pop(team, None)
+                    elif kind == "edge":
+                        adj[team] = max(0.0, float(body["value"]))
+                    else:
+                        adj[team] = float(body["value"]) - float(F["base"][k] if kind == "theo" else F["pa0"][k])
+                    return self.send_json({"ok": True, "controls": save_controls({key: adj})})
+            if path == "/api/controls":
+                return self.send_json({"ok": True, "controls": save_controls(body.get("set") or {})})
             if path == "/api/quote":                       # manual resting bid and/or offer
                 num = lambda v: None if v in (None, "") else float(v)
                 qty = body.get("qty")
                 return self.send_json(gateway.call(gateway.manual_quote, mid, body.get("iid"), num(body.get("bid")),
                                                    num(body.get("ask")), qty if isinstance(qty, int) else -1))
-            if path == "/api/cancel":                      # one order
-                return self.send_json(gateway.call(gateway.cancel, mid, str(body.get("oid"))))
-            if path == "/api/order":
+            if path == "/api/order":                       # click on a price: fill now at that price or cancel
                 qty = body.get("qty")
                 return self.send_json(gateway.call(gateway.place, mid, body.get("iid"), body.get("side"),
                                                    qty if isinstance(qty, int) else -1, body.get("price"), "ioc", False))
@@ -959,10 +1193,17 @@ def main():
     ps.gateway = gateway = DeskGateway(trading)
     gateway.start()
     save_controls({"quoting": False})                      # never starts quoting by itself
+    if not controls()["wideSince"]:                        # first session: start wide too
+        save_controls({"wideSince": time.time()})
     model()
     threading.Thread(target=brain, daemon=True).start()
-    server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+    server = ThreadingHTTPServer(("0.0.0.0" if SHARE else "127.0.0.1", PORT), Handler)
     print(f"tournament desk on http://localhost:{PORT}  ({'LIVE' if trading else 'paper'}; Ctrl+C to stop)")
+    if SHARE:
+        ips = sorted({ip for ip in socket.gethostbyname_ex(socket.gethostname())[2] if not ip.startswith("127.")})
+        print("SHARED: the others open this link (it lets them trade - only give it to the desk):")
+        for ip in ips:
+            print(f"    http://{ip}:{PORT}/?k={TOKEN}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

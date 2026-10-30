@@ -1,83 +1,646 @@
 <title>Tournament desk</title>
 <!--
-  The page is split so several people can work on it at once:
-    tdesk.html            this shell: shared styles, the top bar, the layout
-    static/core.js        shared: data refresh, helpers (post, setCtl, toast, f2 ...), tab switching
-    static/sidebar.js     always visible: bracket, results & fixtures
-    static/tab_model.js   tab "Model theos"   (theos, deflection, board, pricing, setup)
-    static/tab_positions.js tab "Positions"   (instruments, P&L, orders, manual quotes, quoting settings)
-    static/tab_hedging.js tab "Hedging"       (exposure by outcome - to be built out)
-  A tab file calls TABS.register({id, title, html, render}) and only touches elements inside its own html.
+  One page, two tabs, no scrolling:
+    Markets    order book (or chart) per team in a groups x teams grid; click a price to trade it
+    Positions  position, average price, market value, MTM P&L, theo / PA editing, hedges
+  Data: GET /api/state every 0.5 s, GET /api/history (charts) every 2 s while a chart is open.
 -->
 <style>
-:root{--bg:#ffffff;--card:#ffffff;--line:#dde1e6;--ink:#1a1f26;--mut:#6b7480;--acc:#1f6fd1;--good:#178a4c;--bad:#d03a3a;--warn:#e0a000;--field:#f6f7f9;--hover:#eef3fb}
-body{background:var(--bg);color:var(--ink);font:13px/1.4 system-ui,Segoe UI,sans-serif;margin:0;padding:0 16px 40px}
-h2{font-size:14px;margin:0 0 8px;color:var(--mut);text-transform:uppercase;letter-spacing:.05em}
-.bar{position:sticky;top:0;z-index:5;background:var(--bg);display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:10px 0;border-bottom:1px solid var(--line)}
-.layout{display:grid;grid-template-columns:minmax(0,1fr) 400px;gap:16px;align-items:start}
-.side{position:sticky;top:58px;max-height:calc(100vh - 70px);overflow-y:auto}
-@media (max-width:1100px){.layout{grid-template-columns:1fr}.side{position:static;max-height:none}}
-.tabs{display:flex;gap:4px;margin-top:12px;border-bottom:2px solid var(--line)}
-.tabs button{border:none;border-bottom:3px solid transparent;border-radius:0;background:none;padding:8px 16px;font-weight:600;color:var(--mut);margin-bottom:-2px}
-.tabs button.act{color:var(--acc);border-bottom-color:var(--acc)}
-.card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px;margin-top:12px}
-.row{display:flex;flex-wrap:wrap;gap:12px;align-items:center}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:12px}
-button{background:var(--field);color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:5px 10px;cursor:pointer;font:inherit}
+:root{color-scheme:dark;--bg:#0d1117;--card:#161b22;--card2:#1c2230;--line:#2a3140;--ink:#e6edf3;--mut:#8b949e;--acc:#58a6ff;
+  --bid:#3fb950;--ask:#f85149;--warn:#d29922;--hit:#ffd400;--cross:rgba(121,192,255,.28);--mine:#d2a8ff}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0;overflow:hidden;background:var(--bg);color:var(--ink);font:12px/1.35 system-ui,Segoe UI,sans-serif}
+body{display:flex;flex-direction:column;padding:0 8px 6px}
+button{background:var(--card2);color:var(--ink);border:1px solid var(--line);border-radius:5px;padding:2px 8px;cursor:pointer;font:inherit}
 button:hover{border-color:var(--acc)}
-button.on{background:var(--good);color:#fff;border-color:var(--good);font-weight:600}
-button.kill{background:var(--bad);border-color:var(--bad);color:#fff;font-weight:700}
-button.warn{background:var(--warn);border-color:var(--warn);color:#1b1300;font-weight:700}
-input,select,textarea{background:#fff;color:var(--ink);border:1px solid var(--line);border-radius:5px;padding:4px 6px;font:inherit}
-input[type=number]{width:64px}
-.badge{padding:3px 8px;border-radius:5px;font-weight:700}
-.paper{background:#e3e7ec}.live{background:var(--bad);color:#fff}
-.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:4px;vertical-align:middle}
-.banner{background:#fff4d6;border:1px solid var(--warn);border-radius:6px;padding:6px 10px;margin-top:8px}
-.mut{color:var(--mut)}.pos{color:var(--good)}.neg{color:var(--bad)}
-.big{font-size:26px;font-weight:700;min-width:70px;text-align:center}
-.tbl{overflow-x:auto}
-table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}
-th,td{padding:3px 6px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap}
-th{color:var(--mut);font-weight:500;background:var(--card)}
-td.l,th.l{text-align:left}
-td.click{cursor:pointer}td.click:hover{background:var(--hover)}
-.err{color:var(--bad);font-weight:600}
-.ok{color:var(--good)}
-.ctl{display:flex;flex-direction:column;gap:2px}.ctl label{color:var(--mut);font-size:11px}
-details summary{cursor:pointer;color:var(--mut);text-transform:uppercase;font-size:14px;letter-spacing:.05em}
-#toast{position:fixed;right:16px;bottom:16px;background:#1a1f26;color:#fff;border:1px solid var(--line);padding:8px 12px;border-radius:6px;display:none;max-width:420px;z-index:10}
+button:disabled{opacity:.4;cursor:default}
+input,select{background:#0b0f15;color:var(--ink);border:1px solid var(--line);border-radius:4px;padding:2px 4px;font:inherit}
+input[type=number]{width:56px}
+.num{font-variant-numeric:tabular-nums}
+.mut{color:var(--mut)}.pos{color:var(--bid)}.neg{color:var(--ask)}
+/* top bar */
+#bar{display:flex;align-items:center;gap:10px;padding:6px 0;flex-wrap:nowrap;white-space:nowrap}
+#bar b.t{font-size:14px}
+.badge{padding:1px 7px;border-radius:4px;font-weight:700;font-size:11px}
+.paper{background:#30363d}.live{background:var(--ask);color:#fff}
+.tabs{display:flex;gap:2px;margin-left:6px}
+.tabs button{border:none;border-bottom:2px solid transparent;border-radius:0;background:none;color:var(--mut);font-weight:600;padding:4px 10px}
+.tabs button.act{color:var(--ink);border-bottom-color:var(--acc)}
+.grp{display:flex;align-items:center;gap:4px;padding:2px 8px;border:1px solid var(--line);border-radius:6px;background:var(--card)}
+.spin{display:inline-flex;align-items:center;gap:2px}
+.spin button{padding:0 5px;line-height:16px}
+.spin span{min-width:20px;text-align:center;font-weight:700}
+.on,.go{background:#238636!important;border-color:#2ea043!important;color:#fff!important;font-weight:700}
+.stop{background:#b62324!important;border-color:#f85149!important;color:#fff!important;font-weight:700}
+.offb{background:#30363d}
+.xb{color:#f85149!important;font-weight:900;border-color:#f8514966!important}
+#tray{display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding-top:6px}
+#tray[hidden]{display:none}
+.chip{display:inline-flex;align-items:center;gap:6px;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:1px 4px 1px 10px;opacity:.75}
+.chip button{border-radius:10px;padding:0 6px}
+.amber{background:#5a4300!important;border-color:var(--warn)!important;color:#ffd77a!important;font-weight:700}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%}
+#err{color:var(--ask);font-weight:600}
+/* grid */
+#grid{flex:1;min-height:0;display:grid;gap:6px}
+.colh{display:flex;align-items:center;gap:6px;color:var(--mut);font-weight:700;text-transform:uppercase;letter-spacing:.06em;font-size:11px;cursor:grab;padding:0 4px}
+.cell{background:var(--card);border:1px solid var(--line);border-radius:7px;display:flex;flex-direction:column;min-height:0;min-width:0;overflow:hidden;transition:border-color .15s}
+.cell.flash{border:2px solid var(--hit);box-shadow:0 0 0 2px rgba(255,212,0,.35)}
+.cell.done{opacity:.42;filter:grayscale(.8)}
+.cell.dragover{outline:2px dashed var(--acc)}
+.hd{display:flex;align-items:center;gap:6px;padding:4px 6px;border-bottom:1px solid var(--line);background:var(--card2)}
+.hd .nm{font-weight:700;font-size:13px;overflow:hidden;text-overflow:ellipsis;cursor:grab}
+.hd .rk{color:var(--mut);font-size:11px}
+.hd .sp{flex:1}
+.hd button{padding:0 6px;font-size:11px}
+.bd{flex:1;min-height:0;position:relative;display:flex;flex-direction:column}
+.ft{display:flex;align-items:center;gap:6px;padding:3px 6px;border-top:1px solid var(--line)}
+.ft input{width:52px;padding:1px 3px}
+.ft button{padding:0 6px;font-size:11px}
+.fv{display:flex;gap:10px;padding:2px 6px;font-size:12px}
+.fv b{font-weight:700}
+/* book */
+table.bk{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+.bk td{padding:1px 6px;text-align:right;border-bottom:1px solid #1f2633}
+.bk td.px{cursor:pointer;font-weight:700}
+.bk td.b{color:var(--bid)}.bk td.a{color:var(--ask);text-align:left}
+.bk td.qa{text-align:left}
+.bk td.px:hover{background:#26324a}
+.bk td.x{background:var(--cross)}
+.bk .me{color:var(--mine);font-size:10px}
+.bk th{color:var(--mut);font-weight:500;font-size:10px;text-align:right;padding:0 6px}
+.bk th.l{text-align:left}
+.note{color:var(--mut);font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+canvas.ch{flex:1;min-height:0;width:100%;display:block;cursor:crosshair}
+.lg{display:flex;gap:8px;font-size:10px;color:var(--mut);padding:1px 6px}
+.lg i{display:inline-block;width:10px;height:2px;vertical-align:middle;margin-right:3px}
+.tip{position:absolute;pointer-events:none;background:#0b0f15ee;border:1px solid var(--line);border-radius:4px;padding:3px 6px;font-size:11px;white-space:nowrap;z-index:3}
+/* steppers: fair / pos-adj - fair / edge, on the side of each market and on top in positions */
+.mrow{flex:1;min-height:0;display:flex}
+.mrow .bd{flex:1;min-width:0}
+.side{display:flex;flex-direction:column;gap:3px;padding:3px 5px;border-left:1px solid var(--line);align-items:stretch;justify-content:flex-start}
+.side .stp{flex-direction:row;gap:2px}
+.side .stp button{width:36px;line-height:20px}
+.side .stp input{width:58px}
+.side .stp .cap{text-align:left;max-width:none;width:84px;padding-left:3px;line-height:1.1}
+.stp{display:flex;flex-direction:column;align-items:center;gap:1px;min-width:0}
+.stp button{width:58px;padding:0;line-height:14px;font-size:10px}
+.stp input{width:58px;text-align:center;font-weight:700;font-size:13px;padding:1px 2px}
+.stp .cap{font-size:10px;color:var(--mut);text-align:center;line-height:1.15;max-width:70px}
+.stp.ed input{border-color:var(--warn);color:#ffd77a}
+/* positions */
+.pz{display:flex;gap:10px;padding:5px 6px 2px}
+.pz .stp button{width:72px}.pz .stp input{width:72px;font-size:15px}.pz .stp .cap{max-width:90px}
+.kv{padding:3px 6px;font-size:13px;line-height:1.5;font-variant-numeric:tabular-nums}
+.kv span.k{color:var(--mut)}
+.kv>span.it{white-space:nowrap}
+.kv b{font-weight:700}
+.kv i{font-style:normal;color:var(--line);padding:0 4px}
+.hg{padding:2px 6px 4px;font-size:11px;font-variant-numeric:tabular-nums}
+.hg div{display:flex;gap:6px;cursor:pointer;border-radius:3px;padding:0 3px}
+.hg div:hover{background:#26324a}
+.hg .e{margin-left:auto;font-weight:700}
+/* modal */
+#modal{position:fixed;inset:0;background:#000a;display:flex;align-items:center;justify-content:center;z-index:20}
+#modal[hidden]{display:none}
+.mbox{background:var(--card);border:1px solid var(--line);border-radius:10px;width:min(1400px,96vw);height:min(820px,92vh);display:flex;flex-direction:column}
+.mhd{display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--line)}
+.mbd{flex:1;min-height:0;overflow:auto;padding:12px}
+.mft{display:flex;gap:8px;align-items:center;justify-content:flex-end;padding:8px 12px;border-top:1px solid var(--line)}
+.setup{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}
+.setup h3,.gview h3{margin:0 0 6px;font-size:12px;color:var(--mut);text-transform:uppercase;letter-spacing:.06em}
+.srow{display:flex;gap:4px;margin-bottom:6px}
+.srow input.nm{flex:1;min-width:0}
+.srow input.sd{width:44px}
+.srow select{width:120px}
+.gview{display:flex;flex-wrap:wrap;gap:16px;justify-content:center}
+.gbox{position:relative;width:300px;height:290px}
+.gbox svg{position:absolute;inset:0}
+.gnode{position:absolute;width:104px;height:30px;margin:-15px 0 0 -52px;background:var(--card2);border:1px solid var(--line);border-radius:6px;display:flex;align-items:center;justify-content:center;gap:4px;font-weight:700;overflow:hidden;white-space:nowrap;padding:0 4px}
+.gnode small{color:var(--mut);font-weight:500}
+.sbox{position:absolute;display:flex;gap:2px;background:var(--bg);padding:2px;border:1px solid var(--line);border-radius:5px;transform:translate(-50%,-50%)}
+.sbox.col{flex-direction:column}
+.sbox input{width:40px;text-align:center;padding:1px;font-weight:700}
+.sbox.set{border-color:var(--bid)}
+.sbox input.bad{border-color:var(--ask)}
+.ko{display:grid;grid-template-columns:repeat(4,1fr);gap:18px;height:100%}
+.kcol{display:flex;flex-direction:column;justify-content:space-around;gap:8px}
+.kcol h3{margin:0;font-size:12px;color:var(--mut);text-transform:uppercase;letter-spacing:.06em;text-align:center}
+.km{border:1px solid var(--line);border-radius:6px;background:var(--card2)}
+.km .lb{font-size:10px;color:var(--mut);padding:1px 6px}
+.km .tm{display:flex;align-items:center;gap:6px;padding:3px 6px;border-top:1px solid var(--line);cursor:pointer}
+.km .tm span{flex:1;font-weight:600}
+.km .tm.w{background:#173d24}
+.km .tm.w span::after{content:"  ✓";color:var(--bid)}
+.km .tm.tbd span{color:var(--mut);font-weight:400;font-style:italic}
+.km input{width:38px;text-align:center}
+.sets{display:grid;grid-template-columns:auto auto;gap:6px 12px;align-items:center;max-width:520px}
+.sets label{color:var(--mut)}
+#toast{position:fixed;right:12px;bottom:12px;background:#21262d;color:var(--ink);border:1px solid var(--line);padding:7px 11px;border-radius:6px;display:none;max-width:460px;z-index:30}
 </style>
 
-<div class="bar">
-  <b>Tournament desk</b>
+<div id="bar">
+  <b class="t">Tournament desk</b>
   <span id="mode" class="badge paper">PAPER</span>
-  <input id="market" placeholder="market id" style="width:240px">
-  <button onclick="setCtl({market:val('market')})">Load</button>
-  <span id="mstatus" class="mut"></span>
-  <span id="api"></span>
+  <span class="dot" id="apidot" title="exchange connection"></span>
+  <input id="market" placeholder="market id" style="width:200px">
+  <button onclick="loadMarket()">Load</button>
+  <span id="mname" class="mut" style="max-width:220px;overflow:hidden;text-overflow:ellipsis"></span>
+  <div class="tabs"><button id="tabMk" class="act" onclick="setTab('mk')">Markets</button><button id="tabPos" onclick="setTab('pos')">Position management</button></div>
+  <div class="grp" title="Market-making requirement: quote no wider than this spread in this many markets">
+    MM: spread ≤ <span class="spin"><button onclick="bump('rebateWidth',-0.1,0.1)">▼</button><input id="mmW" type="number" step="0.1" style="width:50px" onchange="setCtl({rebateWidth:+this.value})"><button onclick="bump('rebateWidth',0.1)">▲</button></span>
+    in <span class="spin"><button onclick="bump('nTight',-1)">▼</button><span id="mmN">-</span><button onclick="bump('nTight',1)">▲</button></span> markets
+    <span id="mmNow" class="mut"></span><span id="narrow" class="mut" title="after each result every market starts wide and narrows to the MM spread"></span>
+  </div>
+  <div class="grp" title="Deflection: each share we get moves that market's position-adjusted fair by this much of our edge there (make 9 at 11, get lifted, 50% -> 10.5), and correlated markets with it">
+    deflect <span class="spin"><button onclick="bump('deflPct',-0.1)">▼</button><span id="dpct">-</span><button onclick="bump('deflPct',0.1)">▲</button></span> of edge
+    <button id="adBtn" onclick="setCtl({autoDefl:!S.controls.autoDefl})">auto</button>
+  </div>
+  <div class="grp" title="Lots per click-trade">qty <span class="spin"><button onclick="bump('clickQty',-1,1)">▼</button><span id="qty">1</span><button onclick="bump('clickQty',1,1)">▲</button></span></div>
+  <span>MTM P&amp;L <b id="pnl" class="num">-</b></span>
+  <span id="err"></span>
   <span style="flex:1"></span>
-  <button id="quoteBtn" onclick="toggleQuote()">Quoting OFF</button>
-  <button class="warn" onclick="post('/api/incoming',{}).then(()=>toast('pulled - enter the result, then switch quoting on'))">Result incoming - pull</button>
-  <button class="kill" onclick="post('/api/kill',{}).then(()=>toast('KILLED: all orders pulled, quoting off'))">KILL</button>
-  <span title="marked to market: mid, else last trade">MTM P&amp;L <b id="pnl">-</b></span>
+  <button onclick="openResults()">Add result</button>
+  <button onclick="openSettings()" title="Settings">⚙</button>
+  <button id="allBtn" onclick="toggleAll()">Turn Quotes On</button>
 </div>
-<div id="err" class="err"></div>
-<div id="paused" class="banner" hidden></div>
-
-<div class="layout">
-  <main>
-    <div class="tabs" id="tabBar"></div>
-    <div id="tabBody"></div>
-  </main>
-  <aside class="side" id="side"></aside>
-</div>
+<div id="grid"></div>
+<div id="tray" hidden></div>
+<div id="modal" hidden><div class="mbox"><div class="mhd" id="mhd"></div><div class="mbd" id="mbd"></div><div class="mft" id="mft"></div></div></div>
 <div id="toast"></div>
 
-<script>window.TDESK_TOKEN = "__TRADE_TOKEN__";</script>
-<script src="/static/core.js"></script>
-<script src="/static/sidebar.js"></script>
-<script src="/static/tab_model.js"></script>
-<script src="/static/tab_positions.js"></script>
-<script src="/static/tab_hedging.js"></script>
-<script>start();</script>
+<script>
+const TOKEN = "__TRADE_TOKEN__";
+let S = null, TAB = localStorage.getItem("tdTab") || "mk", HIST = {}, CHART = {}, ZOOM = {}, SEEN = null, BUILT = "";
+const $ = id => document.getElementById(id);
+const f2 = x => x == null || isNaN(x) ? "–" : (+x).toFixed(2);
+const sg = x => x == null ? "–" : (x > 0 ? "+" : "") + x;
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const abbr = t => String(t || "?").replace(/[^A-Za-z0-9]/g, "").slice(0, 3).toUpperCase();
+const ord = n => n + (["th","st","nd","rd"][(n % 100 - 20) % 10] || ["th","st","nd","rd"][n % 100] || "th");
+
+function toast(m, ms = 3500) { const t = $("toast"); t.textContent = m; t.style.display = "block"; clearTimeout(t._h); t._h = setTimeout(() => t.style.display = "none", ms); }
+async function post(url, body) {
+  const r = await fetch(url, {method: "POST", headers: {"Content-Type": "application/json", "X-Trade-Token": TOKEN}, body: JSON.stringify(body)});
+  const j = await r.json().catch(() => ({ok: false, reason: "HTTP " + r.status}));
+  if (!j.ok) toast(j.reason || "failed");
+  return j;
+}
+async function setCtl(set) { const j = await post("/api/controls", {set}); if (j.ok && S) S.controls = j.controls; refresh(); return j; }
+function loadMarket() { let v = $("market").value.trim(); const m = v.match(/\/m\/([^/?#]+)/); if (m) v = m[1]; setCtl({market: v}); }
+function bump(k, d, min = 0) { if (!S) return; setCtl({[k]: Math.max(min, Math.round(((S.controls[k] || 0) + d) * 100) / 100)}); }
+function toggleAll() { if (!S) return; const on = !S.controls.quoting; post("/api/allquotes", {on}).then(j => j.ok && toast(on ? "Quotes on in every market" : "Quotes off: everything pulled")); }
+function setTab(t) { TAB = t; localStorage.setItem("tdTab", t); BUILT = ""; render(); }
+const row = team => S.rows.find(r => r.team === team);
+
+// --- trading clicks ---
+function trade(team, side, price) {
+  const r = row(team); if (!r || !r.iid) return;
+  const q = S.controls.clickQty || 1;
+  post("/api/order", {iid: r.iid, side, price, qty: q}).then(j => j.ok && toast(`${side === "bid" ? "BUY" : "SELL"} ${q} ${team} @ ${f2(price)}: filled ${j.filled}`));
+}
+function manual(team) {
+  const r = row(team), c = cellOf(team); if (!r) return;
+  const b = c.querySelector(".mb").value, a = c.querySelector(".ma").value;
+  post("/api/quote", {iid: r.iid, bid: b, ask: a, qty: S.controls.clickQty || 1}).then(j => { if (j.ok) { toast(`posted ${team} ${b || "-"} / ${a || "-"}`); c.querySelector(".mb").value = c.querySelector(".ma").value = ""; } });
+}
+function quoteBtn(team) {
+  const r = row(team); if (!r) return;
+  const on = r.off || r.blocked.length;          // off, or a side traded on -> back on (both sides)
+  post("/api/pull", {team, off: !on});
+}
+function setTheo(team, kind, value) { return post("/api/theo", {team, kind, value}).then(refresh); }
+function hideTeam(team, hidden) { BUILT = ""; post("/api/hide", {team, hidden}).then(refresh); }
+function resetTeam(team) { setTheo(team, "theo", null).then(() => setTheo(team, "pa", null)).then(() => setTheo(team, "edge", null)); }
+
+// steppers: our fair, (pos-adj fair - fair), edge charged each side. ▲▼ 0.1 or type a value.
+const KINDS = ["theo", "diff", "edge"], KINDS_POS = [...KINDS, "seed"];
+const kval = (r, k) => k === "theo" ? r.our : k === "diff" ? r.pa - r.theo : k === "seed" ? r.seedVal : r.edge;
+function stepper(J, k) {
+  return `<div class="stp s-${k}"><button onclick='stepK(${J},"${k}",0.1)'>▲ 0.1</button>
+    <input class="num" onkeydown="if(event.key==='Enter')this.blur()" onchange='sendK(${J},"${k}",parseFloat(this.value))'>
+    <button onclick='stepK(${J},"${k}",-0.1)'>▼ 0.1</button><span class="cap"></span></div>`;
+}
+function sendK(team, k, v) {
+  const r = row(team); if (!r || isNaN(v)) return;
+  v = Math.round(v * 100) / 100;
+  if (k === "seed") { toast(`${team}: seed ${v.toFixed(1)} - re-pricing…`, 1500); post("/api/seed", {team, value: v}).then(refresh); }
+  else if (k === "theo") setTheo(team, "theo", v);
+  else if (k === "diff") setTheo(team, "pa", r.theo + v);          // moves PA only, keeping fair where it is
+  else setTheo(team, "edge", Math.max(0, v));
+}
+function stepK(team, k, d) { const r = row(team), v = r && kval(r, k); if (v != null) sendK(team, k, v + d); }
+function renderSteppers(el, r) {
+  const ed = {theo: r.theoEdited, diff: r.paEdited, edge: r.edgeEdited, seed: r.seedEdited};
+  const cap = {theo: "Fair", diff: `Pos-adj fair <b>${f2(r.pa)}</b>`, edge: "Edge", seed: `Seed (was ${r.seed})`};
+  const tip = {theo: `our fair (model ${f2(r.base)}). Moves the fair, pos-adj fair and every correlated team. Dropped when a result comes in.`,
+               diff: "pos-adj fair minus fair: moves the position-adjusted fair only (and correlated teams' pos-adj fairs)",
+               edge: "edge we charge each side of the position-adjusted fair (half our width). Edited: overrides the wide-then-narrow schedule until the next result",
+               seed: "the team's seed as a number (1 = strongest): 2.4 sits between seeds 2 and 3. Lower = stronger. Re-prices the whole tournament; kept through results. Type the whole seed to go back"};
+  for (const k of KINDS_POS) {
+    const s = el.querySelector(".s-" + k); if (!s) continue;
+    const inp = s.querySelector("input"), v = kval(r, k);
+    if (document.activeElement !== inp) inp.value = v == null ? "" : k === "seed" ? (+v).toFixed(1) : (k === "diff" && v > 0 ? "+" : "") + f2(v);
+    s.classList.toggle("ed", !!ed[k]);
+    s.querySelector(".cap").innerHTML = cap[k]; s.title = tip[k];
+    s.querySelectorAll("button,input").forEach(x => x.disabled = r.known || (k === "edge" && v == null));
+  }
+}
+
+// --- layout: columns = groups, rows = teams; drag to rearrange ---
+function layout() {
+  const g = S.state.groups, L = S.controls.layout || {};
+  const keys = Object.keys(g);
+  const cols = Array.isArray(L.cols) && L.cols.length === keys.length && keys.every(k => L.cols.includes(k)) ? L.cols : keys;
+  const rows = {};
+  for (const k of keys) {
+    const want = (L.rows || {})[k];
+    rows[k] = Array.isArray(want) && want.length === g[k].length && g[k].every(t => want.includes(t)) ? want : g[k];
+  }
+  return {cols, rows};
+}
+let DRAG = null;
+function onDragStart(e, kind, key) { DRAG = {kind, key}; e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", key); }
+function onDrop(e, kind, key) {
+  e.preventDefault(); document.querySelectorAll(".dragover").forEach(x => x.classList.remove("dragover"));
+  if (!DRAG || DRAG.key === key) return;
+  const L = layout();
+  if (DRAG.kind === "col" && kind === "col") {
+    const c = L.cols.filter(x => x !== DRAG.key); c.splice(L.cols.indexOf(key), 0, DRAG.key); L.cols = c;
+  } else if (DRAG.kind === "team" && kind === "team") {
+    const ga = row(DRAG.key).group, gb = row(key).group;
+    if (ga !== gb) { toast("teams move within their own group column - drag a group header to move a whole column"); return; }
+    const r = L.rows[ga].filter(x => x !== DRAG.key); r.splice(L.rows[ga].indexOf(key), 0, DRAG.key); L.rows = {...L.rows, [ga]: r};
+  } else return;
+  DRAG = null; BUILT = ""; setCtl({layout: L});
+}
+const cellOf = team => document.querySelector(`.cell[data-team="${CSS.escape(team)}"]`);
+
+// where each visible team goes. Rows = the fewest that hold the teams still on screen, so every time
+// a whole row's worth is minimised the rest get bigger. Groups stay as columns while each group's
+// remaining teams fit in that many rows; otherwise the teams flow column by column (groups together).
+function placement() {
+  const L = layout(), hid = new Set(S.controls.hidden || []);
+  const vis = L.cols.flatMap(c => L.rows[c]).filter(t => !hid.has(t)), V = vis.length;
+  const cols = V <= 1 ? 1 : V <= 4 ? 2 : V <= 6 ? 3 : L.cols.length, rows = Math.max(1, Math.ceil(V / cols));
+  const per = L.cols.map(c => L.rows[c].filter(t => !hid.has(t)));
+  if (cols === L.cols.length && per.every(p => p.length <= rows))
+    return {groups: L.cols, cols, rows, cells: per.flatMap((p, ci) => p.map((t, ri) => ({t, col: ci + 1, row: ri + 2})))};
+  return {groups: null, cols, rows, cells: vis.map((t, i) => ({t, col: Math.floor(i / rows) + 1, row: i % rows + 1}))};
+}
+function build() {
+  const P = placement(), g = $("grid");
+  g.style.gridTemplateColumns = `repeat(${P.cols}, minmax(0,1fr))`;
+  g.style.gridTemplateRows = (P.groups ? "18px " : "") + `repeat(${P.rows}, minmax(0,1fr))`;
+  let h = "";
+  if (P.groups) P.groups.forEach((c, ci) => h += `<div class="colh" draggable="true" style="grid-column:${ci + 1};grid-row:1" ondragstart="onDragStart(event,'col','${c}')" ondragover="event.preventDefault()" ondrop="onDrop(event,'col','${c}')">Group ${esc(c)}</div>`);
+  for (const {t, col, row: ri} of P.cells) {
+    const T = esc(t), J = esc(JSON.stringify(t)), pos = `grid-column:${col};grid-row:${ri}`;
+    const dnd = `ondragover="event.preventDefault();this.classList.add('dragover')" ondragleave="this.classList.remove('dragover')" ondrop='onDrop(event,"team",${J})'`;
+    const hd = `<div class="hd"><span class="nm" draggable="true" ondragstart='onDragStart(event,"team",${J})' title="drag to reorder within the group">${T}</span><span class="rk"></span><span class="sp"></span>`;
+    const tail = `<button class="rs" title="undo this team's fair, pos-adj and edge edits" onclick='resetTeam(${J})'>↺</button><button class="xb" title="settled: minimise to the bottom bar" onclick='hideTeam(${J},true)'>✕</button>`;
+    if (TAB === "mk") h += `<div class="cell" data-team="${T}" style="${pos}" ${dnd}>
+      ${hd}<button class="cb" onclick='toggleChart(${J})'>chart</button><button class="qb" onclick='quoteBtn(${J})'>-</button>${tail}</div>
+      <div class="mrow"><div class="bd"></div><div class="side">${KINDS.map(k => stepper(J, k)).join("")}</div></div>
+      <div class="fv num"></div>
+      <div class="ft"><span class="ps num"></span><span class="note"></span>
+        <input class="mb" placeholder="bid" title="manual bid (qty = click qty)"><input class="ma" placeholder="offer" title="manual offer"><button onclick='manual(${J})'>post</button></div></div>`;
+    else h += `<div class="cell" data-team="${T}" style="${pos}" ${dnd}>
+      ${hd}<span class="rg mut num"></span>${tail}</div>
+      <div class="pz">${KINDS_POS.map(k => stepper(J, k)).join("")}</div>
+      <div class="kv"></div>
+      <div class="ot note" style="padding:0 6px;font-size:11px"></div><div class="hg"></div></div>`;
+  }
+  g.innerHTML = h;
+  const hid = (S.controls.hidden || []).filter(t => S.rows.some(r => r.team === t));
+  $("tray").hidden = !hid.length;
+  $("tray").innerHTML = `<span class="mut">minimised:</span>` + hid.map(t => { const r = row(t), J = esc(JSON.stringify(t));
+    return `<span class="chip">${esc(t)} <span class="mut num">${r ? f2(r.theo) : ""}</span><button title="maximise: back on the screen" onclick='hideTeam(${J},false)'>⤢</button></span>`; }).join("");
+  if (TAB === "mk") for (const t of Object.keys(CHART)) if (CHART[t]) mountChart(t);
+}
+
+// --- render ---
+function render() {
+  if (!S) return;
+  const c = S.controls;
+  $("mode").textContent = S.trading ? "LIVE" : "PAPER"; $("mode").className = "badge " + (S.trading ? "live" : "paper");
+  $("apidot").style.background = S.api.read ? "var(--bid)" : (c.market ? "var(--ask)" : "var(--mut)");
+  if (document.activeElement !== $("market")) $("market").value = c.market;
+  $("mname").textContent = S.market ? `${S.market} · ${S.status}` : "no market loaded";
+  $("tabMk").classList.toggle("act", TAB === "mk"); $("tabPos").classList.toggle("act", TAB === "pos");
+  if (document.activeElement !== $("mmW")) $("mmW").value = c.rebateWidth;
+  $("mmN").textContent = c.nTight; $("qty").textContent = c.clickQty;
+  $("dpct").textContent = Math.round(c.deflPct * 100) + "%";
+  $("adBtn").textContent = c.autoDefl ? "auto-deflection ON" : "auto-deflection OFF"; $("adBtn").className = c.autoDefl ? "go" : "offb";
+  $("mmNow").innerHTML = S.cover ? `<span class="${S.cover.within >= S.cover.need ? "pos" : "neg"}">now ${S.cover.within}/${S.cover.need}</span>` : "";
+  $("narrow").textContent = S.narrowLeft > 0 ? ` · narrowing, ${Math.floor(S.narrowLeft / 60)}:${String(Math.floor(S.narrowLeft % 60)).padStart(2, "0")} left` : "";
+  $("pnl").textContent = f2(S.totalPnl); $("pnl").className = "num " + (S.totalPnl >= 0 ? "pos" : "neg");
+  $("err").textContent = S.error || (S.mappingProblems.length && c.market ? "⚠ " + S.mappingProblems[0] : "");
+  const all = $("allBtn"); all.textContent = c.quoting ? "Turn Quotes Off" : "Turn Quotes On"; all.className = c.quoting ? "stop" : "go";
+  all.title = c.quoting ? "pull every quote in every market" : "quote every market (re-enables any pulled ones)";
+  const sig = TAB + JSON.stringify(placement()) + S.state.teams.join();
+  if (sig !== BUILT) { BUILT = sig; build(); }
+  const groupStage = S.stage === "groups" || S.stage === "setup", flow = !placement().groups;
+  for (const r of S.rows) {
+    const el = cellOf(r.team); if (!el) continue;
+    el.classList.toggle("done", r.settled);
+    el.querySelector(".xb").style.display = r.settled ? "" : "none";
+    el.querySelector(".rs").style.display = r.theoEdited || r.paEdited || r.edgeEdited ? "" : "none";
+    const played = S.rows.some(x => x.group === r.group && x.rank && x.rank.p);
+    el.querySelector(".rk").textContent = (flow ? `Group ${r.group}` : "") + (groupStage && played && r.rank ? `${flow ? " · " : ""}${ord(r.rank.rank)} · ${r.rank.pts}pt (${r.rank.p}P)` : "");
+    renderSteppers(el, r);
+    if (TAB === "mk") renderMarket(el, r); else renderPos(el, r);
+  }
+  flashHits();
+}
+
+function renderMarket(el, r) {
+  const qb = el.querySelector(".qb");
+  if (!r.iid) { qb.textContent = "no contract"; qb.disabled = true; qb.className = "qb"; }
+  else {
+    qb.disabled = false;
+    if (r.blocked.length) { qb.textContent = `start quoting (${r.blocked.join("+")} hit)`; qb.className = "qb go"; qb.title = "we were traded on: that side is off. Click to quote both sides again"; }
+    else if (r.off) { qb.textContent = "start quoting"; qb.className = "qb go"; qb.title = "quote this market again"; }
+    else { qb.textContent = "pull quotes"; qb.className = "qb stop"; qb.title = S.controls.quoting ? "pull our quotes in this market" : "quotes are off everywhere (top right); this market will quote when they're turned on"; }
+  }
+  const cb = el.querySelector(".cb"); cb.textContent = CHART[r.team] ? "order book" : "chart";
+  el.querySelector(".fv").innerHTML = r.known
+    ? `<span>known value <b>${f2(r.theo)}</b></span><span class="mut">quoted ±0.10</span>`
+    : `<span title="(n x other market makers' mid + our fair) / (n + 1)"><span class="mut">fair</span> <b>${f2(r.theo)}</b>${r.nMM ? ` <span class="mut">(ours ${f2(r.our)} · ${r.nMM} MM${r.nMM > 1 ? "s" : ""} ${f2(r.mktMid)})</span>` : ""}</span>
+       <span><span class="mut">pos-adj</span> <b>${f2(r.pa)}</b></span>${r.width != null ? `<span class="mut" title="copy: inside the other market makers' top of book, copying it; own: our own market">${r.mode} · ${f2(r.width)} wide${r.edgeEdited ? " (edge set)" : ""}</span>` : ""}`;
+  el.querySelector(".ps").innerHTML = `pos <b class="${r.pos > 0 ? "pos" : r.pos < 0 ? "neg" : ""}">${sg(r.pos)}</b>` + (r.avg != null ? ` <span class="mut">@ ${f2(r.avg)}</span>` : "");
+  el.querySelector(".note").textContent = r.iid ? (r.note || (r.tight ? "MM requirement market" : "")) : "map a contract in Add result → Setup";
+  el.querySelector(".note").title = r.note || "";
+  if (CHART[r.team]) { drawChart(r.team); return; }
+  const bd = el.querySelector(".bd");
+  if (!r.iid) { bd.innerHTML = `<div class="mut" style="margin:auto">no contract mapped</div>`; return; }
+  const n = Math.max(1, Math.min(5, Math.floor((bd.clientHeight - 16) / 19)));
+  const J = esc(JSON.stringify(r.team));
+  let h = `<table class="bk"><tr><th>qty</th><th>bid</th><th class="l">offer</th><th class="l">qty</th></tr>`;
+  for (let i = 0; i < n; i++) {
+    const b = r.bids[i], a = r.asks[i];
+    const bx = b && !r.known && b[0] > r.pa + 1e-9 && b[1] > b[2] ? " x" : "", ax = a && !r.known && a[0] < r.pa - 1e-9 && a[1] > a[2] ? " x" : "";
+    h += `<tr><td>${b ? b[1] + (b[2] ? ` <span class="me">(${b[2]} ours)</span>` : "") : ""}</td>`
+      + (b ? `<td class="px b${bx}" title="click: SELL into this bid" onclick='trade(${J},"ask",${b[0]})'>${f2(b[0])}</td>` : `<td></td>`)
+      + (a ? `<td class="px a${ax}" title="click: BUY this offer" onclick='trade(${J},"bid",${a[0]})'>${f2(a[0])}</td>` : `<td></td>`)
+      + `<td class="qa">${a ? a[1] + (a[2] ? ` <span class="me">(${a[2]} ours)</span>` : "") : ""}</td></tr>`;
+  }
+  bd.innerHTML = h + "</table>";
+}
+
+function renderPos(el, r) {
+  el.querySelector(".rg").textContent = `range ${r.range[0]}–${r.range[1]}`;
+  const mv = r.mktValue == null ? `<b class="mut">null</b>` : `<b>${f2(r.mktValue)}</b>`, dot = "<i>·</i>";
+  el.querySelector(".kv").innerHTML = [
+    `<span class="k">position:</span> <b class="${r.pos > 0 ? "pos" : r.pos < 0 ? "neg" : ""}">${r.iid ? sg(r.pos) : "no contract"}</b>`,
+    `<span class="k">avg price:</span> <b>${r.avg == null ? "–" : f2(r.avg)}</b>`,
+    `<span class="k" title="long: best bid we could sell into; short: best offer we could buy back; flat: mid, or one side ± spread/2">market value:</span> ${mv}`,
+    `<span class="k" title="cash + position × market value${r.pnlMarked ? "" : " (no market value: marked at fair)"}">MTM P&amp;L:</span> <b class="${r.pnl >= 0 ? "pos" : "neg"}">${f2(r.pnl)}${r.pnlMarked ? "" : "*"}</b>`,
+    `<span class="k" title="(n x other market makers' mid + our fair) / (n + 1)">market-blended fair${r.nMM ? ` (${r.nMM} MM)` : ""}:</span> <b>${f2(r.theo)}</b>`].map(x => `<span class="it">${x}</span>`).join(` ${dot} `);
+  const J = esc(JSON.stringify(r.team));
+  const oth = r.others.map(([w, p]) => `${esc(w)} <b class="${p > 0 ? "pos" : "neg"}">${sg(p)}</b>`).join(" · ");
+  el.querySelector(".ot").innerHTML = r.iid ? `<span class="mut">others:</span> ${oth || '<span class="mut">all flat</span>'}` : "";
+  el.querySelector(".ot").title = r.others.map(([w, p]) => `${w} ${sg(p)}`).join("\n");
+  el.querySelector(".hg").innerHTML = !r.pos ? `<span class="mut">flat</span>`
+    : !r.hedges.length ? `<span class="mut">no hedge with a price on screen</span>`
+    : `<span class="mut" title="1 lot each, best edge first. edge: what the hedge gives away against our fair. locks: what 1 share of ours + the hedge make whatever happens. corr: how closely its payout moves against ours (−1 = perfect hedge)">best hedges (1 lot) · edge vs fair:</span>`
+      + r.hedges.map(h => `<div title="click to trade 1 lot now" onclick='hedgeClick(${esc(JSON.stringify(h))})'>
+        <b class="${h.side === "bid" ? "pos" : "neg"}">${h.side === "bid" ? "BUY" : "SELL"}</b> ${esc(h.team)} @ ${f2(h.price)}
+        <span class="mut">${h.team === r.team ? "close" : `corr ${h.corr.toFixed(2)}`}</span>
+        <span class="e ${h.edge >= 0 ? "pos" : "neg"}">${h.edge >= 0 ? "+" : ""}${f2(h.edge)}${h.lockPnl != null ? ` <span class="mut">· locks</span> ${h.lockPnl >= 0 ? "+" : ""}${f2(h.lockPnl)} 🔒` : ""}</span></div>`).join("");
+}
+function hedgeClick(h) { post("/api/order", {iid: h.iid, side: h.side, price: h.price, qty: 1}).then(j => j.ok && toast(`${h.side === "bid" ? "BUY" : "SELL"} 1 ${h.team} @ ${f2(h.price)}: filled ${j.filled}`)); }
+
+// traded against: yellow border for a second
+function flashHits() {
+  const first = SEEN === null; SEEN = SEEN || {};
+  for (const r of S.rows) {
+    if (r.hitAt && r.hitAt !== SEEN[r.team]) {
+      SEEN[r.team] = r.hitAt;
+      if (!first && S.now - r.hitAt < 15000) { const el = cellOf(r.team); if (el) { el.classList.add("flash"); setTimeout(() => el.classList.remove("flash"), 1000); } }
+    }
+  }
+}
+
+// --- charts: top of book through the session, PA, trades; wheel = zoom, drag = pan, double-click = reset ---
+function toggleChart(team) { CHART[team] = !CHART[team]; if (CHART[team]) { mountChart(team); fetchHist(); } else render(); render(); }
+function mountChart(team) {
+  const el = cellOf(team); if (!el) return;
+  const bd = el.querySelector(".bd");
+  bd.innerHTML = `<div class="lg"><span><i style="background:var(--bid)"></i>bid</span><span><i style="background:var(--ask)"></i>offer</span><span><i style="background:#fff"></i>pos-adj fair</span><span>▲▼ ours</span><span>△▽ market</span></div><canvas class="ch" title="wheel: zoom · drag: pan · double-click: reset"></canvas><div class="tip" hidden></div>`;
+  const cv = bd.querySelector("canvas");
+  cv.onwheel = e => { e.preventDefault(); const z = view(team), x = xAt(cv, e.offsetX, z), k = e.deltaY > 0 ? 1.25 : 0.8;
+    ZOOM[team] = {x0: x - (x - z.x0) * k, x1: x + (z.x1 - x) * k}; drawChart(team); };
+  cv.onmousedown = e => { const z = view(team), w = cv.clientWidth - 46; let sx = e.clientX;
+    const mv = ev => { const dx = (ev.clientX - sx) / w * (z.x1 - z.x0); ZOOM[team] = {x0: z.x0 - dx, x1: z.x1 - dx}; drawChart(team); };
+    const up = () => { removeEventListener("mousemove", mv); removeEventListener("mouseup", up); };
+    addEventListener("mousemove", mv); addEventListener("mouseup", up); };
+  cv.ondblclick = () => { delete ZOOM[team]; drawChart(team); };
+  cv.onmousemove = e => { cv._hx = e.offsetX; cv._hy = e.offsetY; drawChart(team); };
+  cv.onmouseleave = () => { cv._hx = null; drawChart(team); };
+}
+function series(team) { const r = row(team); return r && r.iid && HIST[r.iid] || {tob: [], trades: [], pa: []}; }
+function view(team) {
+  if (ZOOM[team]) return ZOOM[team];
+  const h = series(team), now = S ? S.now : Date.now();
+  const t0 = Math.min(...[h.tob[0], h.trades[0], h.pa[0]].filter(Boolean).map(p => p[0]), now - 60000);
+  return {x0: t0, x1: now + (now - t0) * 0.02};
+}
+const PADL = 6, PADR = 40, PADT = 6, PADB = 16;
+function xAt(cv, px, z) { return z.x0 + (px - PADL) / (cv.clientWidth - PADL - PADR) * (z.x1 - z.x0); }
+function valAt(arr, t, i) { let v = null; for (const p of arr) { if (p[0] > t) break; v = p[i]; } return v; }
+function drawChart(team) {
+  const el = cellOf(team); if (!el) return;
+  const cv = el.querySelector("canvas.ch"); if (!cv) return;
+  const dpr = devicePixelRatio || 1, W = cv.clientWidth, H = cv.clientHeight;
+  if (cv.width !== W * dpr || cv.height !== H * dpr) { cv.width = W * dpr; cv.height = H * dpr; }
+  const g = cv.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, W, H);
+  const h = series(team), z = view(team), now = S.now, r = row(team);
+  const pw = W - PADL - PADR, ph = H - PADT - PADB;
+  // y range from what's visible
+  const vis = []; const inX = t => t >= z.x0 && t <= z.x1;
+  const addStep = (arr, idx) => { let prev = null; for (const p of arr) { if (p[0] < z.x0) { prev = p; continue; } if (p[0] > z.x1) break; idx.forEach(i => p[i] != null && vis.push(p[i])); }
+    if (prev) idx.forEach(i => prev[i] != null && vis.push(prev[i])); };
+  addStep(h.tob, [1, 2]); addStep(h.pa, [1]); h.trades.forEach(p => inX(p[0]) && vis.push(p[1]));
+  if (!vis.length && r) [r.pa, r.oBid, r.oAsk].forEach(v => v != null && vis.push(v));
+  if (!vis.length) { g.fillStyle = "#8b949e"; g.fillText("no data yet", W / 2 - 25, H / 2); return; }
+  let y0 = Math.min(...vis), y1 = Math.max(...vis); const pad = Math.max((y1 - y0) * 0.08, 0.5); y0 -= pad; y1 += pad;
+  const X = t => PADL + (t - z.x0) / (z.x1 - z.x0) * pw, Y = v => PADT + (1 - (v - y0) / (y1 - y0)) * ph;
+  // recessive grid + axes
+  g.font = "10px system-ui"; g.strokeStyle = "#232a36"; g.fillStyle = "#8b949e"; g.lineWidth = 1;
+  const yt = niceTicks(y0, y1, Math.max(2, Math.floor(ph / 32)));
+  for (const v of yt) { const y = Math.round(Y(v)) + .5; g.beginPath(); g.moveTo(PADL, y); g.lineTo(W - PADR, y); g.stroke(); g.fillText(v.toFixed(yt.step < 1 ? (yt.step < 0.1 ? 2 : 1) : 0), W - PADR + 4, y + 3); }
+  const nx = Math.max(2, Math.floor(pw / 70));
+  for (let i = 0; i <= nx; i++) { const t = z.x0 + (z.x1 - z.x0) * i / nx; const x = X(t);
+    g.fillText(new Date(t).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit", second: (z.x1 - z.x0) < 600000 ? "2-digit" : undefined}), Math.max(0, Math.min(x - 18, W - PADR - 40)), H - 4); }
+  g.save(); g.beginPath(); g.rect(PADL, PADT, pw, ph); g.clip();
+  const step = (arr, i, col, w) => { g.strokeStyle = col; g.lineWidth = w; g.beginPath(); let pen = false, last = null;
+    for (const p of arr) { const v = p[i]; const x = X(p[0]);
+      if (v == null) { if (pen && last != null) g.lineTo(x, Y(last)); pen = false; last = null; continue; }
+      if (pen) { g.lineTo(x, Y(last)); g.lineTo(x, Y(v)); } else { g.moveTo(x, Y(v)); pen = true; } last = v; }
+    if (pen && last != null) g.lineTo(X(now), Y(last)); g.stroke(); };
+  step(h.tob, 1, "#3fb950", 1.5); step(h.tob, 2, "#f85149", 1.5); step(h.pa, 1, "#ffffff", 1.5);
+  for (const [t, p, q, kind] of h.trades) {
+    if (!inX(t)) continue; const x = X(t), y = Y(p), up = kind.endsWith("Buy"), s = 5;
+    g.beginPath(); if (up) { g.moveTo(x, y - s); g.lineTo(x - s, y + s * .8); g.lineTo(x + s, y + s * .8); } else { g.moveTo(x, y + s); g.lineTo(x - s, y - s * .8); g.lineTo(x + s, y - s * .8); } g.closePath();
+    const col = up ? "#3fb950" : "#f85149";
+    if (kind.startsWith("our")) { g.fillStyle = col; g.fill(); g.lineWidth = 1; g.strokeStyle = "#0d1117"; g.stroke(); }
+    else { g.fillStyle = "#ffffff"; g.fill(); g.lineWidth = 1.5; g.strokeStyle = col; g.stroke(); }
+  }
+  g.restore();
+  // hover: crosshair + values
+  const tip = el.querySelector(".tip");
+  if (cv._hx != null && cv._hx > PADL && cv._hx < W - PADR) {
+    const t = xAt(cv, cv._hx, z);
+    g.strokeStyle = "#8b949e66"; g.lineWidth = 1; g.beginPath(); g.moveTo(cv._hx + .5, PADT); g.lineTo(cv._hx + .5, PADT + ph); g.stroke();
+    const near = h.trades.filter(p => Math.abs(X(p[0]) - cv._hx) < 6 && Math.abs(Y(p[1]) - cv._hy) < 8)[0];
+    const names = {ourBuy: "we bought", ourSell: "we sold", mktBuy: "market buy", mktSell: "market sell"};
+    tip.innerHTML = `${new Date(t).toLocaleTimeString()}<br><span class="pos">bid ${f2(valAt(h.tob, t, 1))}</span> · <span class="neg">offer ${f2(valAt(h.tob, t, 2))}</span> · PA ${f2(valAt(h.pa, t, 1))}`
+      + (near ? `<br><b>${names[near[3]]} ${near[2]} @ ${f2(near[1])}</b>` : "");
+    tip.hidden = false; tip.style.left = Math.min(cv._hx + 10, W - 200) + "px"; tip.style.top = (cv.offsetTop + 4) + "px";
+  } else tip.hidden = true;
+}
+function niceTicks(a, b, n) {
+  const raw = (b - a) / n, mag = Math.pow(10, Math.floor(Math.log10(raw))), st = [1, 2, 2.5, 5, 10].map(m => m * mag).find(s => s >= raw) || raw;
+  const out = []; for (let v = Math.ceil(a / st) * st; v <= b; v += st) out.push(+v.toFixed(6)); out.step = st; return out;
+}
+async function fetchHist() { try { HIST = await (await fetch("/api/history", {headers: {"X-Trade-Token": TOKEN}})).json(); } catch (e) {} if (S && TAB === "mk") Object.keys(CHART).filter(t => CHART[t]).forEach(drawChart); }
+
+// --- Add result popup: setup grid -> group diagrams -> knockout bracket ---
+let MTAB = null;
+function openResults() { MTAB = S.stage === "setup" ? "setup" : S.stage === "groups" ? "groups" : "ko"; showModal(); }
+function closeModal() { $("modal").hidden = true; MTAB = null; }
+function showModal() {
+  $("modal").hidden = false;
+  const tabs = [["setup", "Teams & seeds"], ["groups", "Group results"], ["ko", "Knockout"]];
+  $("mhd").innerHTML = `<b>${MTAB === "settings" ? "Settings" : "Add result"}</b><div class="tabs">` + (MTAB === "settings" ? "" : tabs.map(([k, l]) => `<button class="${MTAB === k ? "act" : ""}" onclick="MTAB='${k}';showModal()">${l}</button>`).join("")) + `</div><span style="flex:1"></span><button onclick="closeModal()">✕</button>`;
+  ({setup: modalSetup, groups: modalGroups, ko: modalKO, settings: modalSettings})[MTAB]();
+}
+function modalSetup() {
+  const st = S.state, team2con = {};
+  for (const [c, t] of Object.entries(S.controls.mapping || {})) team2con[t] = c;
+  for (const [c, t] of Object.entries(S.autoMap || {})) if (!team2con[t] && !(c in (S.controls.mapping || {}))) team2con[t] = c;
+  const opts = sel => `<option value="">(no contract)</option>` + S.contracts.map(c => `<option ${c === sel ? "selected" : ""}>${esc(c)}</option>`).join("");
+  $("mbd").innerHTML = `<div class="mut" style="margin-bottom:10px">Type the 16 team names into their groups, with each team's seed (1 = strongest) and the exchange contract it trades as. Picking a contract for a team still called TeamN names it after the contract.${Object.keys(st.results).length ? " <b class='neg'>Results are entered: teams can be renamed (results follow) but not moved between groups.</b>" : ""}</div>
+    <div class="setup">${Object.keys(st.groups).map(g => `<div><h3>Group ${g}</h3>${st.groups[g].map(t => `<div class="srow" data-g="${g}">
+      <input class="sd" type="number" min="0.6" max="16.4" step="0.1" value="${((S.rows.find(r => r.team === t) || {}).seedVal ?? st.teams.indexOf(t) + 1)}" title="seed (1 = strongest; decimals allowed: 2.4 sits between seeds 2 and 3)">
+      <input class="nm" value="${esc(t)}" placeholder="team name"><select onchange="autoName(this)">${opts(team2con[t])}</select></div>`).join("")}</div>`).join("")}</div>
+    <div style="margin-top:16px" class="sets"><label>strength gap (P seed 1 beats seed 16)</label>
+      <select id="supB">${Object.entries(S.presets).map(([n, p]) => `<option value="${p}" ${Math.abs(p - st.pBeat) < 1e-9 ? "selected" : ""}>${n} (${Math.round(p * 100)}%)</option>`).join("")}</select>
+      <label>goals per game</label><input id="supG" type="number" step="0.1" value="${st.goals}"></div>`;
+  $("mft").innerHTML = `<button onclick="closeModal()">Cancel</button><button class="on" onclick="saveSetup()">Save teams</button>`;
+}
+// picking a contract for a team that still has a placeholder name names the team after the contract
+function autoName(sel) { const nm = sel.closest(".srow").querySelector(".nm"); if (sel.value && (!nm.value.trim() || /^Team\d+$/.test(nm.value.trim()))) nm.value = sel.value; }
+async function saveSetup() {
+  document.querySelectorAll(".srow select").forEach(autoName);
+  const rows = [...document.querySelectorAll(".srow")].map(x => ({g: x.dataset.g, seed: +x.querySelector(".sd").value, name: x.querySelector(".nm").value.trim(), con: x.querySelector("select").value}));
+  if (rows.some(r => !(r.seed >= 0.55 && r.seed <= 16.45))) return toast("seeds must be between 0.6 and 16.4 (1 = strongest)");
+  const order = rows.map((r, i) => ({...r, i})).sort((a, b) => a.seed - b.seed || a.i - b.i);
+  const ratings = {}; order.forEach((r, k) => { if (Math.abs(r.seed - (k + 1)) > 1e-9) ratings[r.name] = r.seed; });
+  if (rows.some(r => !r.name) || new Set(rows.map(r => r.name.toLowerCase())).size !== rows.length) return toast("16 different team names needed");
+  const cons = rows.filter(r => r.con).map(r => r.con);
+  if (new Set(cons).size !== cons.length) return toast("a contract is picked for two teams");
+  const groups = {}; rows.forEach(r => (groups[r.g] = groups[r.g] || []).push(r.name));
+  const mapping = {}; rows.forEach(r => r.con && (mapping[r.con] = r.name));
+  const j = await post("/api/setup", {teams: order.map(r => r.name), groupMode: "given", groups, ratings,
+    pBeat: +$("supB").value, goals: +$("supG").value, mapping});
+  if (j.ok) { toast("teams saved - model re-run"); await refresh(); MTAB = "groups"; showModal(); }
+}
+const PAIRS = [[0, 1], [2, 3], [0, 2], [1, 3], [0, 3], [1, 2]];
+const NODE = [[62, 24], [238, 24], [62, 266], [238, 266]];
+function modalGroups() {
+  const fx = S.fixtures.filter(f => !f.ko), st = S.state;
+  let h = `<div class="mut" style="margin-bottom:8px">Each box sits on the line between two teams: the number nearest a team is that team's goals. Leave both empty to clear a result.</div><div class="gview">`;
+  for (const g of Object.keys(st.groups)) {
+    const m = st.groups[g];
+    h += `<div><h3>Group ${g}</h3><div class="gbox"><svg width="300" height="290"><defs><marker id="ar${g}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0L10,5L0,10z" fill="#58a6ff"/></marker></defs>`;
+    const boxes = [];
+    for (const [p, q] of PAIRS) {
+      const [x1, y1] = NODE[p], [x2, y2] = NODE[q], dx = x2 - x1, dy = y2 - y1;
+      const cut = Math.min(56 / Math.abs(dx || 1e-9), 19 / Math.abs(dy || 1e-9));
+      h += `<line x1="${x1 + dx * cut}" y1="${y1 + dy * cut}" x2="${x2 - dx * cut}" y2="${y2 - dy * cut}" stroke="#58a6ff88" stroke-width="1.5" marker-start="url(#ar${g})" marker-end="url(#ar${g})"/>`;
+      const f = fx.find(f => f.group === g && f.pa === p && f.pb === q), t = p === 0 && q === 3 ? 0.3 : p === 1 && q === 2 ? 0.7 : 0.5;
+      const r = f && f.res || {}, col = Math.abs(dy) > Math.abs(dx);
+      boxes.push(`<div class="sbox ${col ? "col" : ""} ${r.ga != null ? "set" : ""}" data-id="${esc(f.id)}" data-a="${esc(f.a)}" data-b="${esc(f.b)}" data-had="${r.ga != null ? 1 : 0}" style="left:${x1 + dx * t}px;top:${y1 + dy * t}px">
+        <input inputmode="numeric" class="ga" placeholder="${abbr(f.a)}" title="${esc(f.a)} goals" value="${r.ga ?? ""}"><input inputmode="numeric" class="gb" placeholder="${abbr(f.b)}" title="${esc(f.b)} goals" value="${r.gb ?? ""}"></div>`);
+    }
+    h += `</svg>` + m.map((t, i) => { const rk = (S.rows.find(r => r.team === t) || {}).rank; return `<div class="gnode" style="left:${NODE[i][0]}px;top:${NODE[i][1]}px" title="${esc(t)}">${esc(t)}${rk ? ` <small>${rk.pts}pt</small>` : ""}</div>`; }).join("") + boxes.join("") + `</div></div>`;
+  }
+  $("mbd").innerHTML = h + "</div>";
+  $("mft").innerHTML = `<span class="mut" style="margin-right:auto">${fx.filter(f => f.res && f.res.ga != null).length}/24 group games entered</span><button onclick="closeModal()">Cancel</button><button class="on" onclick="saveGroups()">Save results</button>`;
+}
+async function saveGroups() {
+  const res = {}; let bad = false;
+  document.querySelectorAll(".sbox").forEach(b => {
+    const a = b.querySelector(".ga"), c = b.querySelector(".gb"); a.classList.remove("bad"); c.classList.remove("bad");
+    const ga = a.value.trim() === "" ? null : +a.value, gb = c.value.trim() === "" ? null : +c.value;
+    if ((ga == null) !== (gb == null) || ga < 0 || gb < 0 || (ga != null && !(Number.isInteger(ga) && Number.isInteger(gb)))) { bad = true; a.classList.add("bad"); c.classList.add("bad"); return; }
+    const old = (S.fixtures.find(f => f.id === b.dataset.id) || {}).res;
+    if (ga == null) { if (old) res[b.dataset.id] = null; return; }
+    if (!old || old.ga !== ga || old.gb !== gb) res[b.dataset.id] = {a: b.dataset.a, b: b.dataset.b, ga, gb};
+  });
+  if (bad) return toast("a score needs both numbers");
+  if (!Object.keys(res).length) return toast("nothing changed");
+  const j = await post("/api/results", {results: res});
+  if (j.ok) { toast(`${Object.keys(res).length} result(s) saved - repriced`); await refresh(); MTAB = S.stage === "groups" ? "groups" : "ko"; showModal(); }
+}
+const KO_COLS = [["Crossovers", ["C2", "C3", "C1", "C4"]], ["Quarter-finals", ["QFA", "QFB", "QFC", "QFD"]], ["Semi-finals", ["SF1", "SF2"]], ["Final / 3rd place", ["F", "T"]]];
+const KO_NAME = {C1: "C1 · 2A v 3B", C2: "C2 · 2B v 3A", C3: "C3 · 2C v 3D", C4: "C4 · 2D v 3C", QFA: "QF A", QFB: "QF B", QFC: "QF C", QFD: "QF D", SF1: "Semi 1", SF2: "Semi 2", F: "Final", T: "3rd place"};
+let KOW = {};
+function modalKO() {
+  KOW = {};
+  const fx = Object.fromEntries(S.fixtures.filter(f => f.ko).map(f => [f.id, f]));
+  const side = (f, w) => { const t = f[w], r = f.res || {}, src = f[w === "a" ? "srcA" : "srcB"];
+    return `<div class="tm ${t ? "" : "tbd"} ${t && r.winner === t ? "w" : ""}" data-w="${w}" onclick="koWin(this)"><span>${t ? esc(t) : esc(src)}</span>
+      <input type="number" min="0" class="g${w}" value="${r["g" + w] ?? ""}" ${t ? "" : "disabled"} onclick="event.stopPropagation()" placeholder="-"></div>`; };
+  $("mbd").innerHTML = (S.stage === "groups" ? `<div class="mut" style="margin-bottom:8px">Group stage isn't finished: the bracket fills in as group results are entered.</div>` : "")
+    + `<div class="ko">` + KO_COLS.map(([n, ids]) => `<div class="kcol"><h3>${n}</h3>` + ids.map(id => { const f = fx[id];
+      return `<div class="km" data-id="${id}" data-a="${esc(f.a || "")}" data-b="${esc(f.b || "")}"><div class="lb">${KO_NAME[id]}</div>${side(f, "a")}${side(f, "b")}</div>`; }).join("") + `</div>`).join("") + `</div>`;
+  $("mft").innerHTML = `<span class="mut" style="margin-right:auto">Click a team to mark the winner (needed when it went to penalties). Scores optional.</span><button onclick="closeModal()">Cancel</button><button class="on" onclick="saveKO()">Save results</button>`;
+}
+function koWin(el) { const m = el.closest(".km"); if (!m.dataset[el.dataset.w]) return; const was = el.classList.contains("w");
+  m.querySelectorAll(".tm").forEach(x => x.classList.remove("w")); if (!was) el.classList.add("w"); KOW[m.dataset.id] = true; }
+async function saveKO() {
+  const res = {};
+  for (const m of document.querySelectorAll(".km")) {
+    const id = m.dataset.id, a = m.dataset.a, b = m.dataset.b; if (!a || !b) continue;
+    const ga = m.querySelector(".ga").value, gb = m.querySelector(".gb").value, wEl = m.querySelector(".tm.w");
+    const old = (S.fixtures.find(f => f.id === id) || {}).res;
+    let winner = wEl ? m.dataset[wEl.dataset.w] : null;
+    if (!winner && ga !== "" && gb !== "" && +ga !== +gb) winner = +ga > +gb ? a : b;
+    if (!winner) { if (old && (KOW[id] || ga === "" && gb === "")) res[id] = null; continue; }
+    const r = {a, b, winner, ga: ga === "" ? null : +ga, gb: gb === "" ? null : +gb};
+    if (!old || JSON.stringify(old) !== JSON.stringify(r)) res[id] = r;
+  }
+  if (!Object.keys(res).length) return toast("nothing changed - pick winners or enter scores");
+  const j = await post("/api/results", {results: res});
+  if (j.ok) { toast("knockout results saved - repriced"); await refresh(); showModal(); }
+}
+// settings: everything that isn't needed minute to minute
+const SETS = [["startWidth", "width right after a result", 1], ["narrowSecs", "seconds to narrow to the MM spread", 30],
+  ["k","non-MM markets narrow to 2 × (k × σ(next result)", 0.1], ["c", "… + c)", 0.1],
+  ["maxPos", "max position per team", 1], ["hardExtra", "hard limit = max + this (free-money takes)", 1], ["budget", "max budget (worst-case loss)", 100],
+  ["takeEdge", "take a price this far through our PA", 0.1], ["takeMax", "take: max lots", 1]];
+function openSettings() { MTAB = "settings"; showModal(); }
+function modalSettings() {
+  const c = S.controls;
+  $("mbd").innerHTML = `<div class="sets">` + SETS.map(([k, l, s]) => `<label>${l}</label><input type="number" step="${s}" value="${c[k]}" onchange="setCtl({${k}:+this.value})">`).join("")
+    + `<label>take crossing prices</label><input type="checkbox" ${c.take ? "checked" : ""} onchange="setCtl({take:this.checked})">`
+    + `<label>start wide again</label><div><button onclick="setCtl({wideSince:Date.now()/1000}).then(()=>toast('every market back to the start width, narrowing again'))">re-widen now</button></div>`
+    + `<label>theo / PA edits</label><div><button onclick="setCtl({theoAdj:{},paAdj:{}}).then(()=>toast('all theo and PA edits cleared'))">clear all edits</button></div>`
+    + `<label>contract mapping</label><div class="${S.mappingProblems.length ? "neg" : "pos"}">${S.mappingProblems.length ? esc(S.mappingProblems.join("; ")) : "OK"}</div>`
+    + `<label>model</label><div class="mut">${S.simMs} ms per re-price</div></div>`;
+  $("mft").innerHTML = `<button onclick="closeModal()">Close</button>`;
+}
+addEventListener("keydown", e => { if (e.key === "Escape" && !$("modal").hidden) closeModal(); });
+
+// --- polling ---
+async function refresh() {
+  try { const j = await (await fetch("/api/state", {headers: {"X-Trade-Token": TOKEN}})).json(); if (j.error && !j.rows) { $("err").textContent = j.error; return; } S = j; render(); }
+  catch (e) { $("err").textContent = "desk server not reachable"; }
+}
+refresh(); setInterval(refresh, 500);
+setInterval(() => { if (TAB === "mk" && Object.values(CHART).some(Boolean)) fetchHist(); }, 2000);
+addEventListener("resize", () => render());
+</script>

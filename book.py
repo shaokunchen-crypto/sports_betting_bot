@@ -1,17 +1,9 @@
 """Everything we know about one market, kept up to date from its event stream.
-
-Works for any market: instruments are described by their legs
-[(type, strike, ratio)], never by hard-coded ids, and instruments the conductor
-deploys mid-session are added as they appear.
-"""
+Instruments the conductor deploys mid-session are added as they appear."""
 import time
 
 from market_events import pull_reason
 from mockx import from_px
-
-
-def parse_legs(raw):
-    return [(l["type"], from_px(l.get("strike")), l.get("ratio", 1)) for l in raw]
 
 
 class Book:
@@ -20,7 +12,7 @@ class Book:
         self.reset()
 
     def reset(self):
-        self.inst = {}        # id -> {"name", "legs", "tick"}
+        self.inst = {}        # id -> {"name", "tick"}
         self.top = {}         # id -> {"bid", "ask", "bidQty", "askQty"} (human prices)
         self.last = {}        # id -> last trade price
         self.pos = {}         # id -> my position
@@ -35,7 +27,7 @@ class Book:
         self.reset()
         for inst in view["instruments"]:
             iid = inst["id"]
-            self.add(iid, inst["name"], inst["legs"], inst["tickSize"])
+            self.add(iid, inst["name"], inst["tickSize"])
             b = inst["bids"][0] if inst["bids"] else None
             a = inst["asks"][0] if inst["asks"] else None
             self.top[iid] = {"bid": from_px(b["price"]) if b else None, "bidQty": b["qty"] if b else 0,
@@ -44,8 +36,8 @@ class Book:
             self.pos[iid] = inst["position"]
         self.changed = set(self.inst)
 
-    def add(self, iid, name, legs, tick_raw):
-        self.inst[iid] = {"name": name, "legs": parse_legs(legs), "tick": tick_raw / 10_000}
+    def add(self, iid, name, tick_raw):
+        self.inst[iid] = {"name": name, "tick": tick_raw / 10_000}
         self.top.setdefault(iid, {"bid": None, "ask": None, "bidQty": 0, "askQty": 0})
         self.pos.setdefault(iid, 0)
 
@@ -56,7 +48,7 @@ class Book:
             self.changed.add(t["instrumentId"])
         kind = ev.get("type")
         if kind == "INSTRUMENT_DEPLOYED":
-            self.add(ev["instrumentId"], ev["name"], ev["legs"], ev["tickSize"])
+            self.add(ev["instrumentId"], ev["name"], ev["tickSize"])
         elif kind == "ORDER_PLACED" and ev.get("owner") == self.me:
             self.my_orders[ev["orderId"]] = {"iid": ev["instrumentId"], "side": ev["side"],
                                              "price": from_px(ev["price"]), "qty": ev["qty"]}
@@ -92,21 +84,6 @@ class Book:
     # --- questions the bot asks ---------------------------------------------------
     def name(self, iid):
         return self.inst.get(iid, {}).get("name", iid)
-
-    def legs(self, iid):
-        return self.inst.get(iid, {}).get("legs", [])
-
-    def singles(self):
-        """(type, strike) -> id, for every one-leg, ratio-1 instrument (plain calls, puts, future)."""
-        out = {}
-        for iid, inst in self.inst.items():
-            legs = inst["legs"]
-            if len(legs) == 1 and legs[0][2] == 1:
-                out[legs[0][:2]] = iid
-        return out
-
-    def future_id(self):
-        return self.singles().get(("future", None))
 
     def trade_price(self, iid, side):
         """Price we'd trade at now taking liquidity. side "bid" = we buy (pay the ask)."""

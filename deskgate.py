@@ -59,6 +59,12 @@ def snapshot(market_id, max_age=0.3):
     return view
 
 
+def events(market_id, from_seq):
+    """Every event after from_seq, over REST (read-only: no websocket, so it never pulls anyone's orders)."""
+    snapshot(market_id, max_age=1e9)                  # makes sure _ex exists
+    return _ex.events(market_id, from_seq)
+
+
 class Gateway(threading.Thread):
     def __init__(self, enabled):
         super().__init__(daemon=True)

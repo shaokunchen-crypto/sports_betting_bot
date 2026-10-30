@@ -24,8 +24,16 @@ Check it works: `.venv\Scripts\python.exe test_tdesk.py` should end with "all te
   but nothing you click can send or cancel orders.
 - **`start_trading.bat`**: the ONE person running the market maker. It asks you to type `LIVE`.
 
-Then, on the page: type the market id → Load. Teams, groups, strength ratings and results are
-in Setup at the bottom. Contract mapping must show "mapping OK". Click **Quoting ON** to start.
+Then, on the page: type the market id (or paste its URL) → Load. **Add result → Teams & seeds**:
+names, seeds, groups and which contract each team trades as. Click **All quotes ON** to start.
+
+## Several people on one desk (the right way)
+
+Run ONE desk and let the others open it in their browser: **`start_trading_shared.bat`** on the
+trading laptop prints a link like `http://10.0.0.5:8003/?k=...`; the others open that link (same
+network; allow Python through the Windows firewall when it asks). Everyone then sees and changes the
+same desk: quotes, results, fair/edge edits, minimised markets, pulls. Each person keeps their own tab,
+charts and zoom. The link lets its holder trade - only give it to the desk. Nobody else runs a server.
 
 ## Sharing one API key: read this
 
@@ -42,39 +50,35 @@ same P&L, and one rate limit (20 commands a second, shared). So:
    The trading laptop's settings are the ones that trade. If someone else enters a result on
    their copy, the quoter doesn't see it.
 
-## The controls that matter most during a game
+## The page: two tabs, one screen, no scrolling (`tdesk.html`)
 
-| Control | What it does |
+Both tabs show a grid: one column per group, one cell per team (drag a team name to reorder it
+within its group, drag a group header to move the column). Settled teams are greyed out.
+
+**Markets**: per team, the order book (click a price to trade it at the top-bar qty; light blue =
+a price through our position-adjusted fair), our fair (blended with the other market makers' mid),
+position-adjusted fair, our width and whether we're copying the top of book. **chart** switches to
+the session's top-of-book bid (green) / offer (red), our position-adjusted fair (white), our trades
+(filled triangles) and everyone else's (white triangles, aggressor side); wheel zooms, drag pans,
+double-click resets. Yellow border = we were just traded on: that side stays off until **quotes ON**.
+
+**Position management**: our fair and position-adjusted fair with ▲▼ 0.1 (or type a value): an edit
+propagates to every correlated team by payout covariance. Position, average price of the open shares,
+market value, MTM P&L, the range a team can still pay, everyone else's position, and the 3 best
+1-lot hedges with their edge (🔒 = locked whatever happens); click one to trade it.
+
+| Top bar | What it does |
 |---|---|
-| Quoting ON / OFF | start / stop the market maker (OFF pulls everything) |
-| Result incoming - pull | pull everything before a result; enter the result; Quoting ON again |
-| KILL | quoting off and every order pulled |
-| pull / quote (per team) | that one contract only |
-| Deflection % | how far our fair moves per share we hold (x half-spread); spreads to the other teams |
-| deflect − / + (per team) | move one team's fair by hand; also spreads to the others; stays until reset |
-| our weight vs market mid | fair = this x our theo + rest x the market mid |
-| rebate settings | how many markets to keep within the rebate width (80% + spare) |
-| trade on crossing prices | sell into bids above where we'd offer / buy offers below where we'd bid |
-| max position / hard limit / max budget | risk limits, checked against the live position |
+| MM: spread ≤ X in N markets | the market-making requirement; ▲▼ on both |
+| qty | lots per click-trade |
+| Add result | first time: names, seeds, groups, contracts. Then the group diagrams (a score box on each line between two teams), then the knockout bracket |
+| ⚙ | start width, narrowing time, deflection, limits, take settings |
+| All quotes ON / OFF | ON re-enables every market; OFF pulls everything |
 
-## The page: three tabs + a sidebar (one file each, so people can work on them separately)
+Each result drops our fair edits (the result replaces them), keeps every team's PA − fair gap, and
+starts every market wide again (START WIDTH, narrowing to the MM spread over NARROW SECS).
 
-| File | What's in it |
-|---|---|
-| `tdesk.html` | the shell: shared styles, top bar (market, Quoting ON, Result incoming, KILL, MTM P&L), layout |
-| `static/core.js` | shared: refreshes `S` (= `/api/state`) every second, helpers (`post`, `setCtl`, `toast`, `hit`, `pull`, `f2`, `esc` ...), tab switching |
-| `static/sidebar.js` | always visible on the right: bracket, results & fixtures (enter scores here) |
-| `static/tab_model.js` | **Model theos**: deflection %, market blend, manual deflection, board, pricing table, setup & mapping |
-| `static/tab_positions.js` | **Positions**: instruments & MTM P&L, trades, manual quotes, resting orders, quoting settings |
-| `static/tab_hedging.js` | **Hedging**: P&L by finishing position per contract (starter - build hedges here) |
-
-A tab file is self-contained: it calls `TABS.register({id, title, html, render})`, where `render(S)`
-runs every second while the tab is open. Keep element ids prefixed per tab (`m...`, `p...`, `h...`)
-so tabs don't clash. Any `<input data-ctl="name">` saves that setting automatically.
-Edit a tab, save, reload the page: no server restart needed for `.html`/`.js` changes.
-New data needs a change in `state_json()` in `tdesk_server.py` (and a restart).
-
-Files: `tdesk_server.py` (server + quoter), `tdesk.html` + `static/` (page), `tpricer.py` (model),
+Files: `tdesk_server.py` (server + quoter), `tdesk.html` (page), `tpricer.py` (model),
 `deskgate.py` (exchange connection), `book.py`, `fastmarket.py`, `market_events.py`,
-`pricing.py`, `mockx.py` (exchange client), `test_tdesk.py` (tests),
+`pricing.py` (ticks), `mockx.py` (exchange client), `test_tdesk.py` (tests),
 `tournament_pricer_brief_1.md` (the spec).
