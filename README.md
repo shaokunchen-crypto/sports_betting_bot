@@ -1,8 +1,9 @@
 # Tournament desk
 
-A pricing and market-making dashboard for the 16-team tournament on mock-exchange.fly.dev.
-It simulates the tournament (groups, crossovers, knockout) to get a theo for every team's payout,
-then quotes all 16 contracts around it. The page runs on your own laptop at http://localhost:8003.
+A pricing and market-making dashboard for the 17-team tournament on mock-exchange.fly.dev: a Bo5
+qualifier (Apex v Glaive), a 16-team Swiss stage (3 wins through, 3 losses out), an 8-team knockout;
+payouts 100 / 60 / 35 / 35 / 20 x4 / 0 (pot 310). It simulates the tournament to get a theo for every
+team's payout, then quotes every contract around it. The page runs on your own laptop at http://localhost:8003.
 
 ## Setup (once, about 2 minutes)
 
@@ -25,7 +26,8 @@ Check it works: `.venv\Scripts\python.exe test_tdesk.py` should end with "all te
 - **`start_trading.bat`**: the ONE person running the market maker. It asks you to type `LIVE`.
 
 Then, on the page: type the market id (or paste its URL) → Load. **Add result → Teams & seeds**:
-names, seeds, groups and which contract each team trades as. Click **All quotes ON** to start.
+names, regions and which contract each team trades as; seeds (same rank in a region = same seed)
+nudge in 0.1 steps. Click **Turn Quotes On** to start.
 
 ## Several people on one desk (the right way)
 
@@ -52,28 +54,35 @@ same P&L, and one rate limit (20 commands a second, shared). So:
 
 ## The page: two tabs, one screen, no scrolling (`tdesk.html`)
 
-Both tabs show a grid: one column per group, one cell per team (drag a team name to reorder it
-within its group, drag a group header to move the column). Settled teams are greyed out.
+Both tabs show a 4 x 4 grid, one square per team (the two qualifiers share one until one of them
+wins; the loser is minimised). Drag a team name onto another square to move it. Before the first
+result each pot has one coloured outline; after it, each square's border shows its Swiss record
+(red losing .. green winning, key at the bottom). Settled teams are greyed out; ✕ minimises them.
 
 **Markets**: per team, the order book (click a price to trade it at the top-bar qty; light blue =
 a price through our position-adjusted fair), our fair (blended with the other market makers' mid),
 position-adjusted fair, our width and whether we're copying the top of book. **chart** switches to
 the session's top-of-book bid (green) / offer (red), our position-adjusted fair (white), our trades
 (filled triangles) and everyone else's (white triangles, aggressor side); wheel zooms, drag pans,
-double-click resets. Yellow border = we were just traded on: that side stays off until **quotes ON**.
+double-click resets. Fair / adj (position-adjusted fair) / Edge can be set beside each book.
+Yellow border = we were just traded on. Auto-deflection ON: we keep quoting (PA moved by the
+deflection % of our edge per share) for the deflection count, or until the position limit, then the
+market switches off until **start quoting**. Auto-deflection OFF: the side we were traded on goes off.
 
-**Position management**: our fair and position-adjusted fair with ▲▼ 0.1 (or type a value): an edit
-propagates to every correlated team by payout covariance. Position, average price of the open shares,
+**Position management**: our fair, the pos-adj − fair gap, edge (▲▼ 0.1) and max position (▲▼ 1);
+fair edits propagate to every correlated team by payout covariance. Position, average price of the open shares,
 market value, MTM P&L, the range a team can still pay, everyone else's position, and the 3 best
 1-lot hedges with their edge (🔒 = locked whatever happens); click one to trade it.
 
 | Top bar | What it does |
 |---|---|
-| MM: spread ≤ X in N markets | the market-making requirement; ▲▼ on both |
+| MM ≤ X in N | the market-making requirement; ▲▼ on both; **snap to edge** sets those markets to exactly X |
+| deflect switch, %, × | auto-deflection on/off, % of our edge per share, how many times before the market switches off |
+| max pos | max position per market (each market can have its own in Position management) |
 | qty | lots per click-trade |
-| Add result | first time: names, seeds, groups, contracts. Then the group diagrams (a score box on each line between two teams), then the knockout bracket |
+| Add result | Teams & seeds (names, regions, contracts, seed nudges, series lengths); Qualifier & Swiss (each round's record groups: pick the two teams, click the winner's side); Knockout (QF teams from the 3-0 / 3-1 / 3-2 pools, then click winners) |
 | ⚙ | start width, narrowing time, deflection, limits, take settings |
-| All quotes ON / OFF | ON re-enables every market; OFF pulls everything |
+| Turn Quotes On / Off | On re-enables every market; Off pulls everything |
 
 Each result drops our fair edits (the result replaces them), keeps every team's PA − fair gap, and
 starts every market wide again (START WIDTH, narrowing to the MM spread over NARROW SECS).

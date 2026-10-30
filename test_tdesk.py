@@ -35,7 +35,7 @@ def setup16(insts_override=None):
 
 def plan(fair, tops, ctl=None, half=2.0, positions=None, feas=None, blocked=None, now=NOW):
     st, teams, feas0, by_team, _ = setup16()
-    return ts.plan_quotes(st, feas or feas0, np.full(16, fair) if np.isscalar(fair) else fair, np.full(16, half),
+    return ts.plan_quotes(st, feas or feas0, np.full(len(teams), fair) if np.isscalar(fair) else fair, np.full(len(teams), half),
                           tops, by_team, positions or {}, ctl or CTL, blocked, now)
 
 
@@ -74,18 +74,21 @@ def test_plan():
     # pulled team / closed contract: nothing
     p, r = plan(20.0, empty, {**CTL, "off": [teams[1]]})
     assert p["i1"] == [] and r[1]["why"] == "pulled" and p["i2"]
-    # max position: long 20 -> no bid
-    p, _ = plan(20.0, empty, positions={"i0": 20})
+    # max position (10 by default; per market if set): long 10 -> no bid; Nova allowed 12 -> bid again
+    p, _ = plan(20.0, empty, positions={"i0": 10})
     assert [o[0] for o in p["i0"]] == ["ask"], p["i0"]
+    p, _ = plan(20.0, empty, {**CTL, "maxPosAdj": {teams[0]: 12}}, positions={"i0": 10})
+    assert [o[0] for o in p["i0"]] == ["bid", "ask"], p["i0"]
     # MM requirement: the N smallest-model-spread markets narrow to the MM spread (2.9 -> 3 on tick 1)
-    hm = np.arange(16, dtype=float) + 2.0
-    p, r = ts.plan_quotes(st, feas, np.full(16, 50.0), hm, empty, by_team, {}, {**CTL, "nTight": 14}, None, NOW)
-    assert [x["tight"] for x in r] == [True] * 14 + [False] * 2 and ts.n_tight(empty, {**CTL, "nTight": 40}) == 16
-    assert p["i0"][1][1] - p["i0"][0][1] <= 4 and p["i15"][1][1] - p["i15"][0][1] == 34, (p["i0"], p["i15"])
-    # 310 self-check: everyone else offers 10 (150 for the other 15) -> our offer must be >= 160
+    N = len(teams)
+    hm = np.arange(N, dtype=float) + 2.0
+    p, r = ts.plan_quotes(st, feas, np.full(N, 50.0), hm, empty, by_team, {}, {**CTL, "nTight": 14}, None, NOW)
+    assert [x["tight"] for x in r] == [True] * 14 + [False] * (N - 14) and ts.n_tight(empty, {**CTL, "nTight": 40}) == N
+    assert p["i0"][1][1] - p["i0"][0][1] <= 4 and p["i16"][1][1] - p["i16"][0][1] == 36, (p["i0"], p["i16"])
+    # 310 self-check: everyone else offers 10 (160 for the other 16) -> our offer must be >= 150
     _, _, _, _, cheap = setup16({k: inst(f"i{k}", t, asks=[10]) for k, t in enumerate(teams)})
     p, _ = plan(100.0, cheap)
-    assert not any(s == "ask" and px < 160 for s, px, q in p["i0"]), p["i0"]
+    assert not any(s == "ask" and px < 150 for s, px, q in p["i0"]), p["i0"]
     # other market makers' mids: n counts the distinct owners quoting both sides
     view = {"instruments": [inst("i0", teams[0], bids=[(40, False, "a")], asks=[(44, False, "a")])]}
     view["instruments"][0]["bids"][0]["orders"].append({"mine": False, "qty": 1, "owner": "b"})
@@ -137,13 +140,15 @@ def hedge_rows(teams, live, pos, avg):
 def test_fairs_and_hedges():
     st, M, pay = final_model()
     ctl = {**CTL, "deflPct": 0.5, "autoDefl": True}
-    # long 1 of finalist 0, bought when our edge was 1 (made 9 at 11 style): its PA drops by 50% x 1,
-    # the other finalist's rises by the same - their total stays 175
-    F = ts.fairs(st, M, {**ctl, "deflAmt": {"T0": 1.0}})
+    # long 1 of finalist 0, bought when our edge was 1 at 50% (made 9 at 11 style): D = 0.5, its PA drops
+    # by 0.5, the other finalist's rises by the same - their total stays 175
+    F = ts.fairs(st, M, {**ctl, "deflAmt": {"T0": 0.5}})
     base, theo, pa = F["base"], F["theo"], F["pa"]
     assert abs(pa[0] - theo[0] + 0.5) < 1e-6 and abs(pa[0] + pa[1] - 175) < 1e-6, pa[:2]
     assert np.allclose(pa[2:], base[2:])                                   # known payouts: no position skew
-    assert np.allclose(ts.fairs(st, M, {**ctl, "deflAmt": {"T0": 1.0}, "autoDefl": False})["pa"], theo)   # switched off
+    # flipping the switch or the % doesn't move a PA we already have
+    for other in ({"autoDefl": False}, {"deflPct": 0.9}):
+        assert np.allclose(ts.fairs(st, M, {**ctl, "deflAmt": {"T0": 0.5}, **other})["pa"], pa)
     # a theo edit on finalist 0 pulls finalist 1 the other way; the PA edit doesn't touch theo
     theo2 = ts.fairs(st, M, {**ctl, "theoAdj": {"T0": 2.0}})["theo"]
     assert abs(theo2[0] - base[0] - 2) < 1e-6 and abs(theo2[1] - base[1] + 2) < 1e-6
@@ -157,15 +162,16 @@ def test_fairs_and_hedges():
     # the PA offset kept through a result is added on top
     F5 = ts.fairs(st, M, {**ctl, "paKeep": {"T0": -1.5}})
     assert abs(F5["pa"][0] - F5["theo"][0] + 1.5) < 1e-9
-    # deflection book: make 9 at 11 (edge 1), get lifted -> D = -1; two more lots at edge 2 -> -5;
+    # deflection book at 100%: make 9 at 11 (edge 1), get lifted -> D = -1; two more lots at edge 2 -> -5;
     # buy 2 back -> scaled to -5/3; flat -> 0; through zero starts at today's edge
     saved = ts.save_controls
     ts.save_controls = lambda ch: ch
     try:
         teams16 = [f"T{i}" for i in range(16)]
         w = np.full(16, 2.0)
-        book = {"deflPos": {}, "deflAmt": {}}
-        def step(pos, width):
+        book = {"deflPos": {}, "deflAmt": {}, "deflPct": 1.0, "autoDefl": True}
+        def step(pos, width, **kw):
+            book.update(kw)
             w[0] = width
             q = np.zeros(16)
             q[0] = pos
@@ -174,6 +180,9 @@ def test_fairs_and_hedges():
             return book["deflAmt"].get("T0", 0.0)
         assert step(-1, 2.0) == -1.0 and step(-3, 4.0) == -5.0 and abs(step(-1, 9.0) + 5 / 3) < 1e-12
         assert step(0, 9.0) == 0.0 and step(2, 6.0) == 6.0 and step(-1, 4.0) == -2.0
+        # switched off: trades no longer move D (we deflect by hand); back on: only new trades count
+        assert step(-4, 4.0, autoDefl=False) == -2.0 and step(0, 4.0) == -2.0
+        assert step(-1, 4.0, autoDefl=True, deflPct=0.5) == -2.0 - 0.5 * 2.0
     finally:
         ts.save_controls = saved
     # the user's example: bought finalist 0 at 80, fair 87.5; buy the other finalist at 90 (gives up 2.5,
@@ -292,6 +301,53 @@ def test_reconcile_reaches_every_market():
         ts.time.time = real_time
 
 
+def test_auto_deflection_count():
+    """AUTO DEFLECTION on, count 3: keep quoting through 2 fills, the 3rd switches the market off;
+    off: the side traded on goes off at once; at the position limit: off at once."""
+    class Book:
+        def __init__(self):
+            self.fills, self.pos, self.my_orders = [], {}, {}
+        def name(self, iid):
+            return iid
+    class FM:
+        def __init__(self):
+            self.cancelled = []
+        def cancel(self, oid):
+            self.cancelled.append(oid)
+    def fill(c, qty, iid="i0"):
+        c["book"].pos[iid] = c["book"].pos.get(iid, 0) + qty
+        c["book"].fills.append({"iid": iid, "qty": qty, "aggressor": False, "oid": "x"})
+    g = ts.DeskGateway(False)
+    c = {"book": Book(), "fm": FM()}
+    g.defl_cfg["m"] = (True, 3, {"i0": 10})
+    for k in range(2):
+        fill(c, -1)
+        g.on_fills("m", c)
+        assert not g.blocked.get("m", {}).get("i0") and g.hits["m"]["i0"] == k + 1
+    c["book"].my_orders = {"o1": {"iid": "i0", "side": "bid"}, "o2": {"iid": "i0", "side": "ask"}}
+    fill(c, -1)
+    g.on_fills("m", c)
+    assert g.blocked["m"]["i0"] == {"bid", "ask"} and sorted(c["fm"].cancelled) == ["o1", "o2"]
+    g.unblock("m", "i0")                                                  # start quoting: count starts again
+    assert not g.hits["m"].get("i0") and not g.blocked["m"].get("i0")
+    g.defl_cfg["m"] = (True, 3, {"i0": 4})                                 # short 3 already: one more = the limit
+    fill(c, -1)
+    g.on_fills("m", c)
+    assert g.blocked["m"]["i0"] == {"bid", "ask"}
+    g2, c2 = ts.DeskGateway(False), {"book": Book(), "fm": FM()}
+    g2.defl_cfg["m"] = (False, 3, {"i0": 10})                              # auto deflection off: just that side
+    fill(c2, 1)
+    g2.on_fills("m", c2)
+    assert g2.blocked["m"]["i0"] == {"bid"}
+    # clicking our own top-of-book offer: cancels it and keeps the quoter off that side
+    g3, c3 = ts.DeskGateway(True), {"book": Book(), "fm": FM()}
+    g3.conns["m"] = c3
+    c3["book"].my_orders = {"o7": {"iid": "i0", "side": "ask", "price": 33.0}, "o8": {"iid": "i0", "side": "bid", "price": 30.0}}
+    assert g3.cancel_level("m", "i0", "ask", 33.0)["ok"] and c3["fm"].cancelled == ["o7"] and g3.blocked["m"]["i0"] == {"ask"}
+    assert not g3.cancel_level("m", "i0", "ask", 34.0)["ok"]                 # nothing of ours there
+    assert ts.DeskGateway(False).cancel_level("m", "i0", "ask", 33.0)["ok"] is False   # paper: refused
+
+
 def test_end_to_end():
     st = tpricer.default_state()
     st["sims"] = 20000
@@ -312,57 +368,65 @@ def test_end_to_end():
     rows = s1["rows"]
     d = [r["pa"] - r["theo"] for r in rows]
     c1 = ts.controls()                                                     # long 4: each lot deflects 50% of its edge
-    assert c1["deflPos"] == {teams[0]: 4.0} and abs(d[0] + 0.5 * c1["deflAmt"][teams[0]]) < 1e-6, (d[0], c1["deflAmt"])
-    assert abs(c1["deflAmt"][teams[0]] - 4 * rows[0]["width"] / 2) <= 4 * 1.0 / 2, (c1["deflAmt"], rows[0]["width"])  # quotes rounded to the tick (1)
+    assert c1["deflPos"] == {teams[0]: 4.0} and abs(d[0] + c1["deflAmt"][teams[0]]) < 1e-6, (d[0], c1["deflAmt"])
+    assert abs(c1["deflAmt"][teams[0]] - 0.5 * 4 * rows[0]["width"] / 2) <= 0.5 * 4 * 1.0, (c1["deflAmt"], rows[0]["width"])  # quotes rounded to the tick (1)
     assert all(x > -1e-9 for x in d[1:]) and abs(sum(d)) < 1e-6, d          # others up, total unchanged
     r0 = rows[0]
     assert r0["pos"] == 4 and r0["avg"] == 30 and r0["mktValue"] == 1 and r0["pnl"] == 4 * (1 - 30) and r0["hitAt"] == 5
-    assert s1["totalPnl"] == r0["pnl"] and len(s1["fixtures"]) == 24 + 12 and s1["stage"] == "setup"
-    hs = r0["hedges"]                                                     # long Team1: buy its rivals, or sell it at 1
+    assert s1["totalPnl"] == r0["pnl"] and s1["stage"] == "qualifier" and s1["fixtures"]["qual"]["a"] == "Apex"
+    hs = r0["hedges"]                                                     # long Nova: buy its rivals, or sell it at 1
     assert all(h["side"] == "bid" and h["corr"] < 0 for h in hs if h["team"] != teams[0]) and hs == sorted(hs, key=lambda h: -h["edge"])
     close = next((h for h in hs if h["team"] == teams[0]), None)
     assert close is None or (close["side"] == "ask" and close["lockPnl"] == 1 - 30), hs
-    ko = {f["id"]: f for f in s1["fixtures"] if f.get("ko")}
-    assert (ko["QFA"]["srcA"], ko["QFA"]["srcB"]) == ("1A", "winner C2") and ko["T"]["srcA"] == "loser SF1"
-    assert s1["api"]["read"] and not s1["api"]["orders"]
-    # seed nudged 4 -> 3.6: stronger, re-priced; the rest of the field pays for it
+    assert s1["api"]["read"] and not s1["api"]["orders"] and r0["maxPos"] == 10 and r0["tier"] == 1
+    # seed nudged 4 -> 3.6: stronger, re-priced
     st0 = tpricer.load_state()
-    tpricer.save_state({**st0, "ratings": {teams[3]: 3.6}})
+    tpricer.save_state({**st0, "ratings": {teams[3]: 2.4}})             # Pulse: shared #1 seed 3.0 -> 2.4, a buff
     sb = ts.state_json()
-    assert sb["rows"][3]["seedVal"] == 3.6 and sb["rows"][3]["seedEdited"] and sb["rows"][3]["base"] > r0["base"] - r0["base"] + rows[3]["base"]
+    assert rows[3]["seed"] == 3.0 and abs(rows[3]["base"] - rows[4]["base"]) < 1.5          # same rank, near-same price
+    assert sb["rows"][3]["seedVal"] == 2.4 and sb["rows"][3]["seedEdited"] and sb["rows"][3]["base"] > rows[3]["base"]
     tpricer.save_state(st0)
     # one other market maker everywhere (1 / 60, mid 30.5): fair = (1 x 30.5 + 1 x ours) / 2
     assert r0["nMM"] == 1 and r0["mktMid"] == 30.5 and abs(r0["theo"] - (30.5 + r0["our"]) / 2) < 1e-9
+    # the qualifier: Glaive wins -> Apex is out (payout 0) and minimised straight away
+    ts.apply_results({"Q": {"a": "Apex", "b": "Glaive", "winner": "Glaive", "ga": 3, "gb": 1}})
+    sq = ts.state_json()
+    rq = {r["team"]: r for r in sq["rows"]}
+    assert sq["stage"] == "swiss" and rq["Apex"]["range"] == [0, 0] and rq["Apex"]["theo"] == 0 and "Apex" in sq["controls"]["hidden"]
+    assert sq["fixtures"]["rounds"][0]["groups"]["0-0"][-1] == "Glaive"
     # a theo edit pins our fair for that team; ours still add up to 310
     ts.save_controls({"theoAdj": {teams[1]: 1.0}, "paAdj": {teams[2]: -2.0}})
     s2 = ts.state_json()
     assert abs(s2["rows"][1]["our"] - s2["rows"][1]["base"] - 1) < 1e-6 and abs(sum(r["our"] for r in s2["rows"]) - 310) < 1e-6
     gap = {r["team"]: r["pa"] - r["theo"] for r in s2["rows"]}
-    # a result: re-priced, our edits dropped, every team's PA keeps its gap to theo, markets start wide again
-    g = st["groups"]["A"]
-    ts.apply_results({f"A:{g[0]}-{g[1]}": {"a": g[0], "b": g[1], "ga": 0, "gb": 3}})
+    # a Swiss result: re-priced, our edits dropped, every team's PA keeps its gap to theo, markets start wide again
+    ts.apply_results({"S1:Nova-Strata": {"a": "Nova", "b": "Strata", "winner": "Strata", "ga": 0, "gb": 1}})
     s3 = ts.state_json()
-    assert s3["rows"][0]["base"] < s1["rows"][0]["base"] and s3["stage"] == "groups" and s3["narrowLeft"] > 0
+    assert s3["rows"][0]["base"] < s2["rows"][0]["base"] and s3["narrowLeft"] > 0
     assert not s3["controls"]["theoAdj"] and not s3["controls"]["paAdj"] and s3["rows"][1]["our"] == s3["rows"][1]["base"]
     assert all(abs((r["pa"] - r["theo"]) - gap[r["team"]]) < 1e-6 for r in s3["rows"]), [(r["pa"] - r["theo"], gap[r["team"]]) for r in s3["rows"]]
-    assert s3["rows"][st["teams"].index(g[1])]["rank"] == {"pts": 3, "p": 1, "gd": 3, "gf": 3, "rank": 1}
-    # renaming (Team1 -> Australia ...) carries results, edits, pulls, minimised markets, layout and mapping
-    ts.save_controls({"edgeAdj": {g[0]: 3.0}, "off": [g[1]], "hidden": [g[0]], "layout": {"rows": {"A": g[::-1]}}})
-    new = ["Australia" if t == g[0] else "Belgium" if t == g[1] else t for t in st["teams"]]
-    ren = dict(zip(st["teams"], new))
-    ts.setup({"teams": new, "groupMode": "given", "groups": {k: [ren[t] for t in v] for k, v in st["groups"].items()}})
+    r3 = {r["team"]: r for r in s3["rows"]}
+    assert r3["Strata"]["rec"] == {"w": 1, "l": 0, "status": "swiss"} and r3["Nova"]["rec"]["l"] == 1
+    # renaming carries results, edits, pulls, minimised markets, layout, mapping, tiers and regions
+    ts.save_controls({"edgeAdj": {"Nova": 3.0}, "off": ["Strata"], "layout": {"order": ["Strata", "Nova"]}})
+    st = tpricer.load_state()
+    ren = {"Nova": "Nova GG", "Strata": "Strata X"}
+    new = [ren.get(t, t) for t in st["teams"]]
+    ts.setup({"teams": new, "groups": {k: [ren.get(t, t) for t in v] for k, v in st["groups"].items()}})
     st2, c2 = tpricer.load_state(), ts.controls()
-    assert st2["results"] == {"A:Australia-Belgium": {"a": "Australia", "b": "Belgium", "ga": 0, "gb": 3}}, st2["results"]
-    assert c2["edgeAdj"] == {"Australia": 3.0} and c2["off"] == ["Belgium"] and c2["hidden"] == ["Australia"]
-    assert c2["layout"]["rows"]["A"][-2:] == ["Belgium", "Australia"] and c2["mapping"][f"{g[0]} contract"] == "Australia"
-    try:                                                                   # moving teams between groups: refused
-        ts.setup({"teams": new, "groupMode": "given", "groups": {**st2["groups"], "A": st2["groups"]["B"], "B": st2["groups"]["A"]}})
-        raise AssertionError("group move with results should be refused")
+    assert st2["results"]["S1:Nova GG-Strata X"] == {"a": "Nova GG", "b": "Strata X", "winner": "Strata X", "ga": 0, "gb": 1}, st2["results"]
+    assert c2["edgeAdj"] == {"Nova GG": 3.0} and c2["off"] == ["Strata X"] and c2["hidden"] == ["Apex"]
+    assert c2["layout"]["order"] == ["Strata X", "Nova GG"] and c2["mapping"]["Nova contract"] == "Nova GG"
+    assert st2["tiers"]["Nova GG"] == 1 and st2["regions"]["Strata X"] == "Sa"
+    try:                                                                   # moving teams between pots: refused
+        g = dict(st2["groups"])
+        k1, k2 = list(g)[:2]
+        ts.setup({"teams": new, "groups": {**g, k1: g[k2], k2: g[k1]}})
+        raise AssertionError("pot move with results should be refused")
     except ValueError:
-        pass
-    # the trader's edge on a market overrides the width schedule (and the MM-spread floor)
+        pass    # the trader's edge on a market overrides the width schedule (and the MM-spread floor)
     _, _, _, _, empty = setup16()
-    p, r = plan(50.0, empty, {**CTL, "wideSince": NOW, "edgeAdj": {"Team1": 1.0}})
+    p, r = plan(50.0, empty, {**CTL, "wideSince": NOW, "edgeAdj": {"Nova": 1.0}})
     assert p["i0"] == [("bid", 49.0, 1), ("ask", 51.0, 1)] and p["i1"][1][1] - p["i1"][0][1] == 20, (p["i0"], p["i1"])
     return s1
 
@@ -374,6 +438,7 @@ if __name__ == "__main__":
     test_fairs_and_hedges()
     test_requote()
     test_reconcile_reaches_every_market()
+    test_auto_deflection_count()
     s = test_end_to_end()
     print(f"test_tdesk.py: all tests passed ({time.time() - t0:.1f} s); PA - theo, long 4 Team1:",
           " ".join(f"{r['team']} {r['pa'] - r['theo']:+.2f}" for r in s["rows"][:8]))

@@ -20,12 +20,32 @@ input[type=number]{width:56px}
 .mut{color:var(--mut)}.pos{color:var(--bid)}.neg{color:var(--ask)}
 /* top bar */
 #bar{display:flex;align-items:center;gap:10px;padding:6px 0;flex-wrap:nowrap;white-space:nowrap}
-#bar b.t{font-size:14px}
-.badge{padding:1px 7px;border-radius:4px;font-weight:700;font-size:11px}
-.paper{background:#30363d}.live{background:var(--ask);color:#fff}
-.tabs{display:flex;gap:2px;margin-left:6px}
-.tabs button{border:none;border-bottom:2px solid transparent;border-radius:0;background:none;color:var(--mut);font-weight:600;padding:4px 10px}
-.tabs button.act{color:var(--ink);border-bottom-color:var(--acc)}
+.tabs{display:flex;gap:4px}
+.tabs button{border:1px solid #fff;border-radius:5px;background:none;color:var(--ink);font-weight:600;padding:3px 12px}
+.tabs button.act{background:var(--acc);border-color:var(--acc);color:#0d1117}
+/* on/off switch */
+.switch{position:relative;display:inline-block;width:34px;height:18px;flex:none}
+.switch input{opacity:0;width:0;height:0}
+.slider{position:absolute;inset:0;background:#484f58;border-radius:9px;transition:.15s;cursor:pointer}
+.slider::before{content:"";position:absolute;width:14px;height:14px;left:2px;top:2px;background:#fff;border-radius:50%;transition:.15s}
+.switch input:checked+.slider{background:#238636}
+.switch input:checked+.slider::before{transform:translateX(16px)}
+/* Swiss record: plain text by the name; the square's border shows it red (losing) .. green (winning) */
+.rec{font-weight:800;font-size:11px;white-space:nowrap}
+.cell.recb{border:2px solid var(--rc)}
+/* pots: one outline around all the teams in a pot, until the first result is in */
+#grid{position:relative}
+.potline{position:absolute;pointer-events:none;z-index:4}
+.potlbl{position:absolute;pointer-events:none;z-index:5;font-size:10px;font-weight:800;padding:0 5px;border-radius:3px;color:#0d1117;transform:translateY(-55%)}
+/* bottom line: record colour key + minimised markets */
+#foot{display:flex;align-items:center;gap:14px;padding-top:6px;flex-wrap:wrap}
+#foot[hidden]{display:none}
+.legend{display:flex;align-items:center;gap:4px;font-size:11px}
+.legend span.sw{display:inline-block;padding:0 6px;border-radius:3px;border:2px solid;font-weight:700}
+/* the two qualifiers share a square until one of them wins */
+.cell.half .mrow{flex-direction:column}
+.cell.half .side{border-left:none;border-top:1px solid var(--line);flex-direction:row;flex-wrap:wrap;justify-content:center}
+.cell.half .ft input,.cell.half .ft button{display:none}
 .grp{display:flex;align-items:center;gap:4px;padding:2px 8px;border:1px solid var(--line);border-radius:6px;background:var(--card)}
 .spin{display:inline-flex;align-items:center;gap:2px}
 .spin button{padding:0 5px;line-height:16px}
@@ -34,18 +54,18 @@ input[type=number]{width:56px}
 .stop{background:#b62324!important;border-color:#f85149!important;color:#fff!important;font-weight:700}
 .offb{background:#30363d}
 .xb{color:#f85149!important;font-weight:900;border-color:#f8514966!important}
-#tray{display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding-top:6px}
+#tray{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
 #tray[hidden]{display:none}
 .chip{display:inline-flex;align-items:center;gap:6px;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:1px 4px 1px 10px;opacity:.75}
 .chip button{border-radius:10px;padding:0 6px}
 .amber{background:#5a4300!important;border-color:var(--warn)!important;color:#ffd77a!important;font-weight:700}
 .dot{display:inline-block;width:8px;height:8px;border-radius:50%}
-#err{color:var(--ask);font-weight:600}
+#err{color:var(--ask);font-weight:600;min-width:0;flex:0 1 auto;overflow:hidden;text-overflow:ellipsis}
 /* grid */
 #grid{flex:1;min-height:0;display:grid;gap:6px}
 .colh{display:flex;align-items:center;gap:6px;color:var(--mut);font-weight:700;text-transform:uppercase;letter-spacing:.06em;font-size:11px;cursor:grab;padding:0 4px}
 .cell{background:var(--card);border:1px solid var(--line);border-radius:7px;display:flex;flex-direction:column;min-height:0;min-width:0;overflow:hidden;transition:border-color .15s}
-.cell.flash{border:2px solid var(--hit);box-shadow:0 0 0 2px rgba(255,212,0,.35)}
+.cell.flash{border:2px solid var(--hit)!important;box-shadow:0 0 0 2px rgba(255,212,0,.35)}
 .cell.done{opacity:.42;filter:grayscale(.8)}
 .cell.dragover{outline:2px dashed var(--acc)}
 .hd{display:flex;align-items:center;gap:6px;padding:4px 6px;border-bottom:1px solid var(--line);background:var(--card2)}
@@ -89,7 +109,7 @@ canvas.ch{flex:1;min-height:0;width:100%;display:block;cursor:crosshair}
 .stp .cap{font-size:10px;color:var(--mut);text-align:center;line-height:1.15;max-width:70px}
 .stp.ed input{border-color:var(--warn);color:#ffd77a}
 /* positions */
-.pz{display:flex;gap:10px;padding:5px 6px 2px}
+.pz{display:flex;gap:10px;padding:5px 6px 2px;justify-content:center}
 .pz .stp button{width:72px}.pz .stp input{width:72px;font-size:15px}.pz .stp .cap{max-width:90px}
 .kv{padding:3px 6px;font-size:13px;line-height:1.5;font-variant-numeric:tabular-nums}
 .kv span.k{color:var(--mut)}
@@ -97,6 +117,14 @@ canvas.ch{flex:1;min-height:0;width:100%;display:block;cursor:crosshair}
 .kv b{font-weight:700}
 .kv i{font-style:normal;color:var(--line);padding:0 4px}
 .hg{padding:2px 6px 4px;font-size:11px;font-variant-numeric:tabular-nums}
+/* top of book at the bottom of each position square: click to trade it, or to cancel it if it's ours */
+.tob{display:flex;gap:6px;padding:4px 6px;border-top:1px solid var(--line);margin-top:auto;font-variant-numeric:tabular-nums}
+.tob .px{flex:1;text-align:center;cursor:pointer;border-radius:4px;padding:2px 4px;font-weight:700;border:1px solid transparent}
+.tob .px.b{color:var(--bid);background:#12261a}.tob .px.a{color:var(--ask);background:#2a1414}
+.tob .px:hover{border-color:var(--acc)}
+.tob .px.mine{border:2px solid var(--mine)}
+.tob .px.none{color:var(--mut);background:none;cursor:default}
+.tob .px small{font-weight:500;color:var(--mut)}
 .hg div{display:flex;gap:6px;cursor:pointer;border-radius:3px;padding:0 3px}
 .hg div:hover{background:#26324a}
 .hg .e{margin-left:auto;font-weight:700}
@@ -107,23 +135,35 @@ canvas.ch{flex:1;min-height:0;width:100%;display:block;cursor:crosshair}
 .mhd{display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--line)}
 .mbd{flex:1;min-height:0;overflow:auto;padding:12px}
 .mft{display:flex;gap:8px;align-items:center;justify-content:flex-end;padding:8px 12px;border-top:1px solid var(--line)}
-.setup{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}
-.setup h3,.gview h3{margin:0 0 6px;font-size:12px;color:var(--mut);text-transform:uppercase;letter-spacing:.06em}
-.srow{display:flex;gap:4px;margin-bottom:6px}
+.setup{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px 28px}
+.cell.half .hd{flex-wrap:wrap;gap:3px;padding:3px 4px}
+.cell.half .hd .rk .pt,.cell.half .hd .rk .mut{display:none}
+.setup h3,.swiss h3,.qual h3{margin:0 0 6px;font-size:12px;color:var(--mut);text-transform:uppercase;letter-spacing:.06em}
+.srow{display:flex;gap:4px;margin-bottom:6px;align-items:center}
 .srow input.nm{flex:1;min-width:0}
-.srow input.sd{width:44px}
-.srow select{width:120px}
-.gview{display:flex;flex-wrap:wrap;gap:16px;justify-content:center}
-.gbox{position:relative;width:300px;height:290px}
-.gbox svg{position:absolute;inset:0}
-.gnode{position:absolute;width:104px;height:30px;margin:-15px 0 0 -52px;background:var(--card2);border:1px solid var(--line);border-radius:6px;display:flex;align-items:center;justify-content:center;gap:4px;font-weight:700;overflow:hidden;white-space:nowrap;padding:0 4px}
-.gnode small{color:var(--mut);font-weight:500}
-.sbox{position:absolute;display:flex;gap:2px;background:var(--bg);padding:2px;border:1px solid var(--line);border-radius:5px;transform:translate(-50%,-50%)}
-.sbox.col{flex-direction:column}
-.sbox input{width:40px;text-align:center;padding:1px;font-weight:700}
-.sbox.set{border-color:var(--bid)}
-.sbox input.bad{border-color:var(--ask)}
-.ko{display:grid;grid-template-columns:repeat(4,1fr);gap:18px;height:100%}
+.srow input.rg{width:42px}
+.srow select{width:112px}
+.seed{display:inline-flex;align-items:center;gap:1px}
+.seed button{padding:0 4px;line-height:16px;font-size:10px}
+.seed input{width:44px;text-align:center;font-weight:700}
+.seed.ed input{border-color:var(--warn);color:#ffd77a}
+.qual{display:flex;align-items:center;gap:10px;margin-bottom:12px;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--card2)}
+.swiss{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px}
+.bucket{border:1px solid var(--line);border-radius:6px;padding:5px;margin-bottom:8px;background:var(--card2)}
+.bucket .bh{display:flex;gap:6px;align-items:center;margin-bottom:4px}
+.tchips{display:flex;flex-wrap:wrap;gap:3px;margin-bottom:4px}
+.tchip{display:inline-flex;gap:3px;align-items:center;font-size:11px;background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:0 6px}
+.tchip.used{opacity:.4}
+.mline{display:flex;align-items:center;gap:4px;font-size:12px;padding:1px 0}
+.mline .w{color:var(--bid);font-weight:700}.mline .l{color:var(--mut)}
+.mline button{padding:0 5px;font-size:10px;margin-left:auto}
+.addm{display:flex;flex-wrap:wrap;gap:3px;align-items:center;margin-top:3px}
+.addm select{max-width:46%;font-size:11px}
+.addm button{padding:0 6px;font-size:11px}
+.ko{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;height:calc(100% - 30px)}
+.kwrap{display:flex;flex-direction:column;min-height:0}
+.kwrap h3{margin:0 0 6px;font-size:12px;color:var(--mut);text-transform:uppercase;letter-spacing:.06em;text-align:center}
+.kwrap .kcol{flex:1}
 .kcol{display:flex;flex-direction:column;justify-content:space-around;gap:8px}
 .kcol h3{margin:0;font-size:12px;color:var(--mut);text-transform:uppercase;letter-spacing:.06em;text-align:center}
 .km{border:1px solid var(--line);border-radius:6px;background:var(--card2)}
@@ -140,24 +180,24 @@ canvas.ch{flex:1;min-height:0;width:100%;display:block;cursor:crosshair}
 </style>
 
 <div id="bar">
-  <b class="t">Tournament desk</b>
-  <span id="mode" class="badge paper">PAPER</span>
   <span class="dot" id="apidot" title="exchange connection"></span>
-  <input id="market" placeholder="market id" style="width:200px">
+  <input id="market" placeholder="market id" style="width:120px" title="market id or link">
   <button onclick="loadMarket()">Load</button>
-  <span id="mname" class="mut" style="max-width:220px;overflow:hidden;text-overflow:ellipsis"></span>
   <div class="tabs"><button id="tabMk" class="act" onclick="setTab('mk')">Markets</button><button id="tabPos" onclick="setTab('pos')">Position management</button></div>
   <div class="grp" title="Market-making requirement: quote no wider than this spread in this many markets">
-    MM: spread ≤ <span class="spin"><button onclick="bump('rebateWidth',-0.1,0.1)">▼</button><input id="mmW" type="number" step="0.1" style="width:50px" onchange="setCtl({rebateWidth:+this.value})"><button onclick="bump('rebateWidth',0.1)">▲</button></span>
-    in <span class="spin"><button onclick="bump('nTight',-1)">▼</button><span id="mmN">-</span><button onclick="bump('nTight',1)">▲</button></span> markets
+    MM ≤ <span class="spin"><button onclick="bump('rebateWidth',-0.1,0.1)">▼</button><input id="mmW" type="number" step="0.1" style="width:46px" onchange="setCtl({rebateWidth:+this.value})"><button onclick="bump('rebateWidth',0.1)">▲</button></span>
+    in <span class="spin"><button onclick="bump('nTight',-1)">▼</button><span id="mmN">-</span><button onclick="bump('nTight',1)">▲</button></span>
     <span id="mmNow" class="mut"></span><span id="narrow" class="mut" title="after each result every market starts wide and narrows to the MM spread"></span>
+    <button onclick="snapEdge()" title="set the MM-requirement markets to exactly this spread now">snap to edge</button>
   </div>
-  <div class="grp" title="Deflection: each share we get moves that market's position-adjusted fair by this much of our edge there (make 9 at 11, get lifted, 50% -> 10.5), and correlated markets with it">
-    deflect <span class="spin"><button onclick="bump('deflPct',-0.1)">▼</button><span id="dpct">-</span><button onclick="bump('deflPct',0.1)">▲</button></span> of edge
-    <button id="adBtn" onclick="setCtl({autoDefl:!S.controls.autoDefl})">auto</button>
+  <div class="grp" title="Auto-deflection: after we're traded on, keep quoting with the position-adjusted fair moved by this much of our edge per share, this many times (or until the position limit) - then that market switches off">
+    <label class="switch"><input type="checkbox" id="adSw" onchange="setCtl({autoDefl:this.checked})"><span class="slider"></span></label> deflect
+    <span class="spin"><button onclick="bump('deflPct',-0.1)">▼</button><span id="dpct">-</span><button onclick="bump('deflPct',0.1)">▲</button></span>
+    × <span class="spin"><button onclick="bump('deflCount',-1,1)">▼</button><span id="dcnt">-</span><button onclick="bump('deflCount',1)">▲</button></span>
   </div>
+  <div class="grp" title="Max position per market (each market can have its own in Position management)">max pos <span class="spin"><button onclick="bump('maxPos',-1)">▼</button><span id="mpos">-</span><button onclick="bump('maxPos',1)">▲</button></span></div>
   <div class="grp" title="Lots per click-trade">qty <span class="spin"><button onclick="bump('clickQty',-1,1)">▼</button><span id="qty">1</span><button onclick="bump('clickQty',1,1)">▲</button></span></div>
-  <span>MTM P&amp;L <b id="pnl" class="num">-</b></span>
+  <span>P&amp;L <b id="pnl" class="num">-</b></span>
   <span id="err"></span>
   <span style="flex:1"></span>
   <button onclick="openResults()">Add result</button>
@@ -165,7 +205,7 @@ canvas.ch{flex:1;min-height:0;width:100%;display:block;cursor:crosshair}
   <button id="allBtn" onclick="toggleAll()">Turn Quotes On</button>
 </div>
 <div id="grid"></div>
-<div id="tray" hidden></div>
+<div id="foot" hidden><div class="legend" id="legend"></div><div id="tray" hidden></div></div>
 <div id="modal" hidden><div class="mbox"><div class="mhd" id="mhd"></div><div class="mbd" id="mbd"></div><div class="mft" id="mft"></div></div></div>
 <div id="toast"></div>
 
@@ -210,106 +250,150 @@ function quoteBtn(team) {
   post("/api/pull", {team, off: !on});
 }
 function setTheo(team, kind, value) { return post("/api/theo", {team, kind, value}).then(refresh); }
+function snapEdge() { post("/api/snap", {}).then(j => j.ok && toast(`${j.n} MM-requirement markets set to exactly ${S.controls.rebateWidth} wide`)); }
+// Swiss record colour: losing red .. winning green; through = full green, out = full red
+function recColor(x) {
+  if (!x) return "#8b949e";
+  if (x.status === "adv") return "hsl(120,70%,45%)";
+  if (x.status === "out") return "hsl(0,75%,55%)";
+  return `hsl(${Math.max(0, Math.min(120, 60 + (x.w - x.l) * 30))},70%,52%)`;
+}
+const recBadge = x => !x ? "" : x.status === "qual" ? `<span class="rec mut" title="plays the qualifier">qual</span>`
+  : `<span class="rec num" title="Swiss record: wins-losses">${x.w}-${x.l}</span>`;
+const POT = {1: ["Tier 1", "#e3b341"], 2: ["Tier 2", "#9fb3c8"], 3: ["Tier 3", "#c9773e"], Q: ["Qualifier", "#a371f7"]};
+// the colour key at the bottom: what each record colour means
+function legendHTML() {
+  const items = [["0-2", {w: 0, l: 2}], ["0-1 · 1-2", {w: 0, l: 1}], ["0-0 · 1-1 · 2-2", {w: 0, l: 0}], ["1-0 · 2-1", {w: 1, l: 0}], ["2-0", {w: 2, l: 0}],
+                 ["3-x through", {status: "adv"}], ["x-3 out", {status: "out"}]];
+  return `<span class="mut">record:</span>` + items.map(([lab, x]) => `<span class="sw" style="border-color:${recColor({status: "swiss", ...x})}">${lab}</span>`).join("");
+}
+// one outline around all the teams in each pot (drawn over the grid, until the first result is in)
+function drawPots() {
+  const g = $("grid");
+  g.querySelectorAll(".potline,.potlbl").forEach(x => x.remove());
+  if (Object.keys(S.state.results || {}).length) return;
+  const gr = g.getBoundingClientRect(), half = 3, slots = {};
+  for (const el of g.querySelectorAll(".cell")) {
+    const r = row(el.dataset.team); if (!r) continue;
+    const k = el.dataset.slot, b = el.getBoundingClientRect(), s = slots[k];
+    const box = {l: b.left - gr.left - half, t: b.top - gr.top - half, r: b.right - gr.left + half, b: b.bottom - gr.top + half};
+    slots[k] = s ? {...s, l: Math.min(s.l, box.l), r: Math.max(s.r, box.r)} : {...box, pot: String(r.tier), c: +el.dataset.c, rw: +el.dataset.r};
+  }
+  const at = (c, rw) => slots[`${c},${rw}`];
+  let h = "";
+  const firsts = {};
+  for (const s of Object.values(slots)) {
+    const col = (POT[s.pot] || ["", "#888"])[1], line = (x, y, w, ht) => `<div class="potline" style="left:${x}px;top:${y}px;width:${w}px;height:${ht}px;background:${col}"></div>`;
+    if ((at(s.c, s.rw - 1) || {}).pot !== s.pot) h += line(s.l, s.t - 1, s.r - s.l, 2);
+    if ((at(s.c, s.rw + 1) || {}).pot !== s.pot) h += line(s.l, s.b - 1, s.r - s.l, 2);
+    if ((at(s.c - 1, s.rw) || {}).pot !== s.pot) h += line(s.l - 1, s.t, 2, s.b - s.t);
+    if ((at(s.c + 1, s.rw) || {}).pot !== s.pot) h += line(s.r - 1, s.t, 2, s.b - s.t);
+    const f = firsts[s.pot];
+    if (!f || s.rw < f.rw || (s.rw === f.rw && s.c < f.c)) firsts[s.pot] = s;
+  }
+  for (const [p, s] of Object.entries(firsts)) h += `<div class="potlbl" style="left:${s.l + 8}px;top:${s.t}px;background:${POT[p][1]}">${POT[p][0]}</div>`;
+  g.insertAdjacentHTML("beforeend", h);
+}
 function hideTeam(team, hidden) { BUILT = ""; post("/api/hide", {team, hidden}).then(refresh); }
 function resetTeam(team) { setTheo(team, "theo", null).then(() => setTheo(team, "pa", null)).then(() => setTheo(team, "edge", null)); }
 
-// steppers: our fair, (pos-adj fair - fair), edge charged each side. ▲▼ 0.1 or type a value.
-const KINDS = ["theo", "diff", "edge"], KINDS_POS = [...KINDS, "seed"];
-const kval = (r, k) => k === "theo" ? r.our : k === "diff" ? r.pa - r.theo : k === "seed" ? r.seedVal : r.edge;
+// steppers. Markets: our fair, the exact position-adjusted fair ("adj"), edge. Position management:
+// our fair, the GAP pos-adj fair - fair, edge, max position. ▲▼ (0.1, max pos 1) or type a value.
+const KINDS = ["theo", "pa", "edge"], KINDS_POS = ["theo", "diff", "edge", "maxpos"];
+const STEP = {maxpos: 1};
+const kval = (r, k) => k === "theo" ? r.our : k === "pa" ? r.pa : k === "diff" ? r.pa - r.theo : k === "maxpos" ? r.maxPos : r.edge;
 function stepper(J, k) {
-  return `<div class="stp s-${k}"><button onclick='stepK(${J},"${k}",0.1)'>▲ 0.1</button>
+  const s = STEP[k] || 0.1;
+  return `<div class="stp s-${k}"><button onclick='stepK(${J},"${k}",${s})'>▲ ${s}</button>
     <input class="num" onkeydown="if(event.key==='Enter')this.blur()" onchange='sendK(${J},"${k}",parseFloat(this.value))'>
-    <button onclick='stepK(${J},"${k}",-0.1)'>▼ 0.1</button><span class="cap"></span></div>`;
+    <button onclick='stepK(${J},"${k}",-${s})'>▼ ${s}</button><span class="cap"></span></div>`;
 }
 function sendK(team, k, v) {
   const r = row(team); if (!r || isNaN(v)) return;
   v = Math.round(v * 100) / 100;
-  if (k === "seed") { toast(`${team}: seed ${v.toFixed(1)} - re-pricing…`, 1500); post("/api/seed", {team, value: v}).then(refresh); }
-  else if (k === "theo") setTheo(team, "theo", v);
+  if (k === "theo") setTheo(team, "theo", v);
+  else if (k === "pa") setTheo(team, "pa", v);
   else if (k === "diff") setTheo(team, "pa", r.theo + v);          // moves PA only, keeping fair where it is
+  else if (k === "maxpos") setTheo(team, "maxpos", Math.max(0, Math.round(v)));
   else setTheo(team, "edge", Math.max(0, v));
 }
 function stepK(team, k, d) { const r = row(team), v = r && kval(r, k); if (v != null) sendK(team, k, v + d); }
 function renderSteppers(el, r) {
-  const ed = {theo: r.theoEdited, diff: r.paEdited, edge: r.edgeEdited, seed: r.seedEdited};
-  const cap = {theo: "Fair", diff: `Pos-adj fair <b>${f2(r.pa)}</b>`, edge: "Edge", seed: `Seed (was ${r.seed})`};
+  const ed = {theo: r.theoEdited, pa: r.paEdited, diff: r.paEdited, edge: r.edgeEdited, maxpos: r.maxPosEdited};
+  const cap = {theo: "Fair", pa: "adj", diff: `Pos-adj fair <b>${f2(r.pa)}</b>`, edge: "Edge", maxpos: "Max pos"};
   const tip = {theo: `our fair (model ${f2(r.base)}). Moves the fair, pos-adj fair and every correlated team. Dropped when a result comes in.`,
+               pa: "position-adjusted fair (what we quote around). Moves it only - and correlated teams' - not the fair",
                diff: "pos-adj fair minus fair: moves the position-adjusted fair only (and correlated teams' pos-adj fairs)",
                edge: "edge we charge each side of the position-adjusted fair (half our width). Edited: overrides the wide-then-narrow schedule until the next result",
-               seed: "the team's seed as a number (1 = strongest): 2.4 sits between seeds 2 and 3. Lower = stronger. Re-prices the whole tournament; kept through results. Type the whole seed to go back"};
-  for (const k of KINDS_POS) {
+               maxpos: "this market's max position (the global one is at the top)"};
+  for (const k of TAB === "mk" ? KINDS : KINDS_POS) {
     const s = el.querySelector(".s-" + k); if (!s) continue;
     const inp = s.querySelector("input"), v = kval(r, k);
-    if (document.activeElement !== inp) inp.value = v == null ? "" : k === "seed" ? (+v).toFixed(1) : (k === "diff" && v > 0 ? "+" : "") + f2(v);
+    if (document.activeElement !== inp) inp.value = v == null ? "" : k === "maxpos" ? v : (k === "diff" && v > 0 ? "+" : "") + f2(v);
     s.classList.toggle("ed", !!ed[k]);
     s.querySelector(".cap").innerHTML = cap[k]; s.title = tip[k];
-    s.querySelectorAll("button,input").forEach(x => x.disabled = r.known || (k === "edge" && v == null));
+    s.querySelectorAll("button,input").forEach(x => x.disabled = k !== "maxpos" && (r.known || (k === "edge" && v == null)));
   }
 }
 
-// --- layout: columns = groups, rows = teams; drag to rearrange ---
-function layout() {
-  const g = S.state.groups, L = S.controls.layout || {};
-  const keys = Object.keys(g);
-  const cols = Array.isArray(L.cols) && L.cols.length === keys.length && keys.every(k => L.cols.includes(k)) ? L.cols : keys;
-  const rows = {};
-  for (const k of keys) {
-    const want = (L.rows || {})[k];
-    rows[k] = Array.isArray(want) && want.length === g[k].length && g[k].every(t => want.includes(t)) ? want : g[k];
-  }
-  return {cols, rows};
+// --- layout: a 4 x 4 grid in seed order (drag a name onto another team to move it) ---
+function order() {
+  const t = S.state.teams, want = (S.controls.layout || {}).order;
+  return Array.isArray(want) && want.length === t.length && t.every(x => want.includes(x)) ? want : t;
 }
 let DRAG = null;
 function onDragStart(e, kind, key) { DRAG = {kind, key}; e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", key); }
 function onDrop(e, kind, key) {
   e.preventDefault(); document.querySelectorAll(".dragover").forEach(x => x.classList.remove("dragover"));
-  if (!DRAG || DRAG.key === key) return;
-  const L = layout();
-  if (DRAG.kind === "col" && kind === "col") {
-    const c = L.cols.filter(x => x !== DRAG.key); c.splice(L.cols.indexOf(key), 0, DRAG.key); L.cols = c;
-  } else if (DRAG.kind === "team" && kind === "team") {
-    const ga = row(DRAG.key).group, gb = row(key).group;
-    if (ga !== gb) { toast("teams move within their own group column - drag a group header to move a whole column"); return; }
-    const r = L.rows[ga].filter(x => x !== DRAG.key); r.splice(L.rows[ga].indexOf(key), 0, DRAG.key); L.rows = {...L.rows, [ga]: r};
-  } else return;
-  DRAG = null; BUILT = ""; setCtl({layout: L});
+  if (!DRAG || DRAG.key === key || DRAG.kind !== "team" || kind !== "team") return;
+  const o = order().filter(x => x !== DRAG.key);
+  o.splice(order().indexOf(key), 0, DRAG.key);
+  DRAG = null; BUILT = ""; setCtl({layout: {order: o}});
 }
 const cellOf = team => document.querySelector(`.cell[data-team="${CSS.escape(team)}"]`);
 
-// where each visible team goes. Rows = the fewest that hold the teams still on screen, so every time
-// a whole row's worth is minimised the rest get bigger. Groups stay as columns while each group's
-// remaining teams fit in that many rows; otherwise the teams flow column by column (groups together).
+// where each visible team goes: 4 across, as few rows as hold the teams still on screen (so every
+// time a whole row's worth is minimised the rest get bigger). The two qualifiers share one square
+// while both are still in; the loser is minimised as soon as their result is in.
 function placement() {
-  const L = layout(), hid = new Set(S.controls.hidden || []);
-  const vis = L.cols.flatMap(c => L.rows[c]).filter(t => !hid.has(t)), V = vis.length;
-  const cols = V <= 1 ? 1 : V <= 4 ? 2 : V <= 6 ? 3 : L.cols.length, rows = Math.max(1, Math.ceil(V / cols));
-  const per = L.cols.map(c => L.rows[c].filter(t => !hid.has(t)));
-  if (cols === L.cols.length && per.every(p => p.length <= rows))
-    return {groups: L.cols, cols, rows, cells: per.flatMap((p, ci) => p.map((t, ri) => ({t, col: ci + 1, row: ri + 2})))};
-  return {groups: null, cols, rows, cells: vis.map((t, i) => ({t, col: Math.floor(i / rows) + 1, row: i % rows + 1}))};
+  const hid = new Set(S.controls.hidden || []), tier = S.state.tiers || {};
+  const vis = order().filter(t => !hid.has(t));
+  const qs = vis.filter(t => tier[t] === "Q");
+  const slots = [];
+  for (const t of vis) {
+    if (qs.length === 2 && t === qs[1]) continue;
+    slots.push(qs.length === 2 && t === qs[0] ? qs : [t]);
+  }
+  const V = slots.length, cols = V <= 1 ? 1 : V <= 4 ? 2 : V <= 6 ? 3 : 4, rows = Math.max(1, Math.ceil(V / cols));
+  const cells = [];
+  slots.forEach((s, i) => {
+    const c = i % cols, r = Math.floor(i / cols) + 1;
+    if (s.length === 2) s.forEach((t, k) => cells.push({t, col: `${c * 2 + 1 + k} / span 1`, row: r, half: true, c}));
+    else cells.push({t: s[0], col: `${c * 2 + 1} / span 2`, row: r, c});
+  });
+  return {cols, rows, cells};
 }
 function build() {
   const P = placement(), g = $("grid");
-  g.style.gridTemplateColumns = `repeat(${P.cols}, minmax(0,1fr))`;
-  g.style.gridTemplateRows = (P.groups ? "18px " : "") + `repeat(${P.rows}, minmax(0,1fr))`;
+  g.style.gridTemplateColumns = `repeat(${P.cols * 2}, minmax(0,1fr))`;
+  g.style.gridTemplateRows = `repeat(${P.rows}, minmax(0,1fr))`;
   let h = "";
-  if (P.groups) P.groups.forEach((c, ci) => h += `<div class="colh" draggable="true" style="grid-column:${ci + 1};grid-row:1" ondragstart="onDragStart(event,'col','${c}')" ondragover="event.preventDefault()" ondrop="onDrop(event,'col','${c}')">Group ${esc(c)}</div>`);
-  for (const {t, col, row: ri} of P.cells) {
+  for (const {t, col, row: ri, half, c} of P.cells) {
     const T = esc(t), J = esc(JSON.stringify(t)), pos = `grid-column:${col};grid-row:${ri}`;
     const dnd = `ondragover="event.preventDefault();this.classList.add('dragover')" ondragleave="this.classList.remove('dragover')" ondrop='onDrop(event,"team",${J})'`;
-    const hd = `<div class="hd"><span class="nm" draggable="true" ondragstart='onDragStart(event,"team",${J})' title="drag to reorder within the group">${T}</span><span class="rk"></span><span class="sp"></span>`;
+    const hd = `<div class="hd"><span class="nm" draggable="true" ondragstart='onDragStart(event,"team",${J})' title="drag onto another team to move it there">${T}</span><span class="rk"></span><span class="sp"></span>`;
     const tail = `<button class="rs" title="undo this team's fair, pos-adj and edge edits" onclick='resetTeam(${J})'>↺</button><button class="xb" title="settled: minimise to the bottom bar" onclick='hideTeam(${J},true)'>✕</button>`;
-    if (TAB === "mk") h += `<div class="cell" data-team="${T}" style="${pos}" ${dnd}>
+    if (TAB === "mk") h += `<div class="cell${half ? " half" : ""}" data-team="${T}" data-slot="${c},${ri}" data-c="${c}" data-r="${ri}" style="${pos}" ${dnd}>
       ${hd}<button class="cb" onclick='toggleChart(${J})'>chart</button><button class="qb" onclick='quoteBtn(${J})'>-</button>${tail}</div>
       <div class="mrow"><div class="bd"></div><div class="side">${KINDS.map(k => stepper(J, k)).join("")}</div></div>
       <div class="fv num"></div>
       <div class="ft"><span class="ps num"></span><span class="note"></span>
         <input class="mb" placeholder="bid" title="manual bid (qty = click qty)"><input class="ma" placeholder="offer" title="manual offer"><button onclick='manual(${J})'>post</button></div></div>`;
-    else h += `<div class="cell" data-team="${T}" style="${pos}" ${dnd}>
+    else h += `<div class="cell${half ? " half" : ""}" data-team="${T}" data-slot="${c},${ri}" data-c="${c}" data-r="${ri}" style="${pos}" ${dnd}>
       ${hd}<span class="rg mut num"></span>${tail}</div>
       <div class="pz">${KINDS_POS.map(k => stepper(J, k)).join("")}</div>
       <div class="kv"></div>
-      <div class="ot note" style="padding:0 6px;font-size:11px"></div><div class="hg"></div></div>`;
+      <div class="ot note" style="padding:0 6px;font-size:11px"></div><div class="hg"></div><div class="tob"></div></div>`;
   }
   g.innerHTML = h;
   const hid = (S.controls.hidden || []).filter(t => S.rows.some(r => r.team === t));
@@ -323,34 +407,39 @@ function build() {
 function render() {
   if (!S) return;
   const c = S.controls;
-  $("mode").textContent = S.trading ? "LIVE" : "PAPER"; $("mode").className = "badge " + (S.trading ? "live" : "paper");
   $("apidot").style.background = S.api.read ? "var(--bid)" : (c.market ? "var(--ask)" : "var(--mut)");
+  $("apidot").title = (S.trading ? "LIVE (can trade)" : "view only") + " · " + (S.market ? `${S.market} · ${S.status}` : "no market loaded");
   if (document.activeElement !== $("market")) $("market").value = c.market;
-  $("mname").textContent = S.market ? `${S.market} · ${S.status}` : "no market loaded";
   $("tabMk").classList.toggle("act", TAB === "mk"); $("tabPos").classList.toggle("act", TAB === "pos");
   if (document.activeElement !== $("mmW")) $("mmW").value = c.rebateWidth;
-  $("mmN").textContent = c.nTight; $("qty").textContent = c.clickQty;
-  $("dpct").textContent = Math.round(c.deflPct * 100) + "%";
-  $("adBtn").textContent = c.autoDefl ? "auto-deflection ON" : "auto-deflection OFF"; $("adBtn").className = c.autoDefl ? "go" : "offb";
+  $("mmN").textContent = c.nTight; $("qty").textContent = c.clickQty; $("mpos").textContent = c.maxPos;
+  $("dpct").textContent = Math.round(c.deflPct * 100) + "%"; $("dcnt").textContent = c.deflCount;
+  $("adSw").checked = !!c.autoDefl;
   $("mmNow").innerHTML = S.cover ? `<span class="${S.cover.within >= S.cover.need ? "pos" : "neg"}">now ${S.cover.within}/${S.cover.need}</span>` : "";
-  $("narrow").textContent = S.narrowLeft > 0 ? ` · narrowing, ${Math.floor(S.narrowLeft / 60)}:${String(Math.floor(S.narrowLeft % 60)).padStart(2, "0")} left` : "";
+  $("narrow").textContent = S.narrowLeft > 0 ? ` ⏱${Math.floor(S.narrowLeft / 60)}:${String(Math.floor(S.narrowLeft % 60)).padStart(2, "0")}` : "";
   $("pnl").textContent = f2(S.totalPnl); $("pnl").className = "num " + (S.totalPnl >= 0 ? "pos" : "neg");
   $("err").textContent = S.error || (S.mappingProblems.length && c.market ? "⚠ " + S.mappingProblems[0] : "");
   const all = $("allBtn"); all.textContent = c.quoting ? "Turn Quotes Off" : "Turn Quotes On"; all.className = c.quoting ? "stop" : "go";
   all.title = c.quoting ? "pull every quote in every market" : "quote every market (re-enables any pulled ones)";
   const sig = TAB + JSON.stringify(placement()) + S.state.teams.join();
   if (sig !== BUILT) { BUILT = sig; build(); }
-  const groupStage = S.stage === "groups" || S.stage === "setup", flow = !placement().groups;
+  const swiss = S.stage === "qualifier" || S.stage === "swiss", pots = !Object.keys(S.state.results || {}).length;
+  $("legend").innerHTML = swiss && !pots ? legendHTML() : "";
+  $("foot").hidden = $("tray").hidden && !(swiss && !pots);
   for (const r of S.rows) {
     const el = cellOf(r.team); if (!el) continue;
     el.classList.toggle("done", r.settled);
+    const rc = swiss && !pots && r.rec && r.rec.status !== "qual";        // record colour on the square's border
+    el.classList.toggle("recb", !!rc);
+    if (rc) el.style.setProperty("--rc", recColor(r.rec));
     el.querySelector(".xb").style.display = r.settled ? "" : "none";
     el.querySelector(".rs").style.display = r.theoEdited || r.paEdited || r.edgeEdited ? "" : "none";
-    const played = S.rows.some(x => x.group === r.group && x.rank && x.rank.p);
-    el.querySelector(".rk").textContent = (flow ? `Group ${r.group}` : "") + (groupStage && played && r.rank ? `${flow ? " · " : ""}${ord(r.rank.rank)} · ${r.rank.pts}pt (${r.rank.p}P)` : "");
+    el.querySelector(".rk").innerHTML = (swiss ? recBadge(r.rec) : "")
+      + ` <span class="mut" title="region, rank in region">${esc(r.region || "")}${r.rank ? " #" + r.rank : ""}</span>`;
     renderSteppers(el, r);
     if (TAB === "mk") renderMarket(el, r); else renderPos(el, r);
   }
+  drawPots();
   flashHits();
 }
 
@@ -359,7 +448,8 @@ function renderMarket(el, r) {
   if (!r.iid) { qb.textContent = "no contract"; qb.disabled = true; qb.className = "qb"; }
   else {
     qb.disabled = false;
-    if (r.blocked.length) { qb.textContent = `start quoting (${r.blocked.join("+")} hit)`; qb.className = "qb go"; qb.title = "we were traded on: that side is off. Click to quote both sides again"; }
+    if (r.blocked.length) { qb.textContent = r.blocked.length === 2 && r.hits ? `start quoting (${r.hits} hit${r.hits > 1 ? "s" : ""})` : `start quoting (${r.blocked.join("+")} off)`; qb.className = "qb go";
+      qb.title = r.blocked.length === 2 ? "switched off after being traded on (deflection count or position limit). Click to quote again - the count starts again" : "that side is off (we were traded on, or our order there was cancelled). Click to quote both sides again"; }
     else if (r.off) { qb.textContent = "start quoting"; qb.className = "qb go"; qb.title = "quote this market again"; }
     else { qb.textContent = "pull quotes"; qb.className = "qb stop"; qb.title = S.controls.quoting ? "pull our quotes in this market" : "quotes are off everywhere (top right); this market will quote when they're turned on"; }
   }
@@ -395,9 +485,9 @@ function renderPos(el, r) {
     `<span class="k">position:</span> <b class="${r.pos > 0 ? "pos" : r.pos < 0 ? "neg" : ""}">${r.iid ? sg(r.pos) : "no contract"}</b>`,
     `<span class="k">avg price:</span> <b>${r.avg == null ? "–" : f2(r.avg)}</b>`,
     `<span class="k" title="long: best bid we could sell into; short: best offer we could buy back; flat: mid, or one side ± spread/2">market value:</span> ${mv}`,
-    `<span class="k" title="cash + position × market value${r.pnlMarked ? "" : " (no market value: marked at fair)"}">MTM P&amp;L:</span> <b class="${r.pnl >= 0 ? "pos" : "neg"}">${f2(r.pnl)}${r.pnlMarked ? "" : "*"}</b>`,
-    `<span class="k" title="(n x other market makers' mid + our fair) / (n + 1)">market-blended fair${r.nMM ? ` (${r.nMM} MM)` : ""}:</span> <b>${f2(r.theo)}</b>`].map(x => `<span class="it">${x}</span>`).join(` ${dot} `);
+    `<span class="k" title="cash + position × market value${r.pnlMarked ? "" : " (no market value: marked at fair)"}">MTM P&amp;L:</span> <b class="${r.pnl >= 0 ? "pos" : "neg"}">${f2(r.pnl)}${r.pnlMarked ? "" : "*"}</b>`].map(x => `<span class="it">${x}</span>`).join(` ${dot} `);
   const J = esc(JSON.stringify(r.team));
+  el.querySelector(".tob").innerHTML = tobHTML(r);
   const oth = r.others.map(([w, p]) => `${esc(w)} <b class="${p > 0 ? "pos" : "neg"}">${sg(p)}</b>`).join(" · ");
   el.querySelector(".ot").innerHTML = r.iid ? `<span class="mut">others:</span> ${oth || '<span class="mut">all flat</span>'}` : "";
   el.querySelector(".ot").title = r.others.map(([w, p]) => `${w} ${sg(p)}`).join("\n");
@@ -408,6 +498,23 @@ function renderPos(el, r) {
         <b class="${h.side === "bid" ? "pos" : "neg"}">${h.side === "bid" ? "BUY" : "SELL"}</b> ${esc(h.team)} @ ${f2(h.price)}
         <span class="mut">${h.team === r.team ? "close" : `corr ${h.corr.toFixed(2)}`}</span>
         <span class="e ${h.edge >= 0 ? "pos" : "neg"}">${h.edge >= 0 ? "+" : ""}${f2(h.edge)}${h.lockPnl != null ? ` <span class="mut">· locks</span> ${h.lockPnl >= 0 ? "+" : ""}${f2(h.lockPnl)} 🔒` : ""}</span></div>`).join("");
+}
+function tobHTML(r) {
+  if (!r.iid) return "";
+  const J = esc(JSON.stringify(r.team)), q = S.controls.clickQty || 1;
+  const cell = (lvl, side) => {
+    if (!lvl) return `<span class="px none">no ${side === "bid" ? "bid" : "offer"}</span>`;
+    const [px, qty, mine] = lvl, cls = side === "bid" ? "b" : "a";
+    if (mine) return `<span class="px ${cls} mine" title="our ${side === "bid" ? "bid" : "offer"} is top of book: click to cancel it (the quoter leaves this side off until start quoting)"
+      onclick='cancelLevel(${J},"${side}",${px})'>${side === "bid" ? "bid" : "offer"} ${f2(px)} <small>×${qty} · ours ✕</small></span>`;
+    return `<span class="px ${cls}" title="click to ${side === "bid" ? "SELL" : "BUY"} ${q} at ${f2(px)}"
+      onclick='trade(${J},"${side === "bid" ? "ask" : "bid"}",${px})'>${side === "bid" ? "bid" : "offer"} ${f2(px)} <small>×${qty}</small></span>`;
+  };
+  return cell(r.bids[0], "bid") + cell(r.asks[0], "ask");
+}
+function cancelLevel(team, side, price) {
+  const r = row(team); if (!r) return;
+  post("/api/cancel_level", {iid: r.iid, side, price}).then(j => j.ok && toast(`cancelled our ${side === "bid" ? "bid" : "offer"} at ${f2(price)} in ${team} - that side stays off until start quoting`));
 }
 function hedgeClick(h) { post("/api/order", {iid: h.iid, side: h.side, price: h.price, qty: 1}).then(j => j.ok && toast(`${h.side === "bid" ? "BUY" : "SELL"} 1 ${h.team} @ ${f2(h.price)}: filled ${j.filled}`)); }
 
@@ -506,121 +613,148 @@ function niceTicks(a, b, n) {
 }
 async function fetchHist() { try { HIST = await (await fetch("/api/history", {headers: {"X-Trade-Token": TOKEN}})).json(); } catch (e) {} if (S && TAB === "mk") Object.keys(CHART).filter(t => CHART[t]).forEach(drawChart); }
 
-// --- Add result popup: setup grid -> group diagrams -> knockout bracket ---
+// --- Add result popup: teams & seeds -> qualifier & Swiss rounds -> knockout. Results save as you enter them. ---
 let MTAB = null;
-function openResults() { MTAB = S.stage === "setup" ? "setup" : S.stage === "groups" ? "groups" : "ko"; showModal(); }
+function openResults() { MTAB = S.stage === "knockout" || S.stage === "done" ? "ko" : "swiss"; showModal(); }
 function closeModal() { $("modal").hidden = true; MTAB = null; }
 function showModal() {
   $("modal").hidden = false;
-  const tabs = [["setup", "Teams & seeds"], ["groups", "Group results"], ["ko", "Knockout"]];
+  const tabs = [["setup", "Teams & seeds"], ["swiss", "Qualifier & Swiss"], ["ko", "Knockout"]];
   $("mhd").innerHTML = `<b>${MTAB === "settings" ? "Settings" : "Add result"}</b><div class="tabs">` + (MTAB === "settings" ? "" : tabs.map(([k, l]) => `<button class="${MTAB === k ? "act" : ""}" onclick="MTAB='${k}';showModal()">${l}</button>`).join("")) + `</div><span style="flex:1"></span><button onclick="closeModal()">✕</button>`;
-  ({setup: modalSetup, groups: modalGroups, ko: modalKO, settings: modalSettings})[MTAB]();
+  ({setup: modalSetup, swiss: modalSwiss, ko: modalKO, settings: modalSettings})[MTAB]();
 }
+const recOf = t => (row(t) || {}).rec;
+const tname = t => t ? `<span style="border-bottom:2px solid ${recColor(recOf(t))}">${esc(t)}</span> ${recBadge(recOf(t))}` : `<i class="mut">qualifier winner</i>`;
+async function saveResult(id, r) {
+  const j = await post("/api/results", {results: {[id]: r}});
+  if (j.ok) { toast(r ? "result saved - re-priced, every market starts wide again" : "result cleared - re-priced"); await refresh(); showModal(); }
+}
+
+// teams & seeds: names, regions, contracts (Save), seeds in 0.1 steps (live - re-prices at once)
 function modalSetup() {
   const st = S.state, team2con = {};
   for (const [c, t] of Object.entries(S.controls.mapping || {})) team2con[t] = c;
   for (const [c, t] of Object.entries(S.autoMap || {})) if (!team2con[t] && !(c in (S.controls.mapping || {}))) team2con[t] = c;
   const opts = sel => `<option value="">(no contract)</option>` + S.contracts.map(c => `<option ${c === sel ? "selected" : ""}>${esc(c)}</option>`).join("");
-  $("mbd").innerHTML = `<div class="mut" style="margin-bottom:10px">Type the 16 team names into their groups, with each team's seed (1 = strongest) and the exchange contract it trades as. Picking a contract for a team still called TeamN names it after the contract.${Object.keys(st.results).length ? " <b class='neg'>Results are entered: teams can be renamed (results follow) but not moved between groups.</b>" : ""}</div>
-    <div class="setup">${Object.keys(st.groups).map(g => `<div><h3>Group ${g}</h3>${st.groups[g].map(t => `<div class="srow" data-g="${g}">
-      <input class="sd" type="number" min="0.6" max="16.4" step="0.1" value="${((S.rows.find(r => r.team === t) || {}).seedVal ?? st.teams.indexOf(t) + 1)}" title="seed (1 = strongest; decimals allowed: 2.4 sits between seeds 2 and 3)">
-      <input class="nm" value="${esc(t)}" placeholder="team name"><select onchange="autoName(this)">${opts(team2con[t])}</select></div>`).join("")}</div>`).join("")}</div>
-    <div style="margin-top:16px" class="sets"><label>strength gap (P seed 1 beats seed 16)</label>
+  const bo = st.bo || {}, boSel = (k, v) => `<select id="bo_${k}">${[1, 3, 5, 7].map(n => `<option ${n === v ? "selected" : ""}>${n}</option>`).join("")}</select>`;
+  $("mbd").innerHTML = `<div class="mut" style="margin-bottom:10px">Seed = how strong we think each team is (1 = strongest). Teams with the same rank in their region start on the same seed. Nudge it in 0.1 steps to say how close two teams are or give one a buff - it re-prices straight away and stays through results. Names, regions and contracts are saved with the button below.</div>
+    <div class="setup">${Object.entries(st.groups).map(([g, ts]) => `<div><h3>${esc(g)}</h3>${ts.map(t => { const r = row(t) || {}, J = esc(JSON.stringify(t));
+      return `<div class="srow" data-t="${esc(t)}">
+        <span class="seed ${r.seedEdited ? "ed" : ""}" title="seed (1 = strongest), was ${r.seed}"><button onclick='seedStep(${J},-0.1)'>▲</button><input class="sd num" value="${(r.seedVal ?? 0).toFixed(1)}" onchange='seedSet(${J},this.value)'><button onclick='seedStep(${J},0.1)'>▼</button></span>
+        <input class="nm" value="${esc(t)}" placeholder="team name"> ${recBadge(r.rec)}
+        <input class="rg" value="${esc(st.regions[t] || "")}" title="region (round 1 never pairs two teams from the same region)"><span class="mut" title="rank within its region: same rank = same starting seed">#${r.rank ?? "?"}</span>
+        <select>${opts(team2con[t])}</select></div>`; }).join("")}</div>`).join("")}</div>
+    <div style="margin-top:16px" class="sets"><label>how much the seeds matter (P seed 1 beats seed ${st.teams.length} in one game)</label>
       <select id="supB">${Object.entries(S.presets).map(([n, p]) => `<option value="${p}" ${Math.abs(p - st.pBeat) < 1e-9 ? "selected" : ""}>${n} (${Math.round(p * 100)}%)</option>`).join("")}</select>
-      <label>goals per game</label><input id="supG" type="number" step="0.1" value="${st.goals}"></div>`;
-  $("mft").innerHTML = `<button onclick="closeModal()">Cancel</button><button class="on" onclick="saveSetup()">Save teams</button>`;
+      <label>Best of … qualifier / Swiss / knockout / final</label><div>${boSel("qual", bo.qual)} ${boSel("swiss", bo.swiss)} ${boSel("ko", bo.ko)} ${boSel("final", bo.final)}</div></div>`;
+  $("mft").innerHTML = `<button onclick="closeModal()">Close</button><button class="on" onclick="saveSetup()">Save names, regions, contracts</button>`;
 }
-// picking a contract for a team that still has a placeholder name names the team after the contract
-function autoName(sel) { const nm = sel.closest(".srow").querySelector(".nm"); if (sel.value && (!nm.value.trim() || /^Team\d+$/.test(nm.value.trim()))) nm.value = sel.value; }
+async function seedSet(team, v) {
+  v = Math.round(parseFloat(v) * 10) / 10; if (isNaN(v)) return;
+  const j = await post("/api/seed", {team, value: v}); if (!j.ok) return;
+  await refresh();
+  const el = document.querySelector(`.srow[data-t="${CSS.escape(team)}"] .seed`), r = row(team);
+  if (el && r) { el.querySelector("input").value = r.seedVal.toFixed(1); el.classList.toggle("ed", r.seedEdited); }
+  toast(`${team}: seed ${v.toFixed(1)} - re-priced`, 1500);
+}
+function seedStep(team, d) { const r = row(team); if (r) seedSet(team, r.seedVal + d); }
 async function saveSetup() {
-  document.querySelectorAll(".srow select").forEach(autoName);
-  const rows = [...document.querySelectorAll(".srow")].map(x => ({g: x.dataset.g, seed: +x.querySelector(".sd").value, name: x.querySelector(".nm").value.trim(), con: x.querySelector("select").value}));
-  if (rows.some(r => !(r.seed >= 0.55 && r.seed <= 16.45))) return toast("seeds must be between 0.6 and 16.4 (1 = strongest)");
-  const order = rows.map((r, i) => ({...r, i})).sort((a, b) => a.seed - b.seed || a.i - b.i);
-  const ratings = {}; order.forEach((r, k) => { if (Math.abs(r.seed - (k + 1)) > 1e-9) ratings[r.name] = r.seed; });
-  if (rows.some(r => !r.name) || new Set(rows.map(r => r.name.toLowerCase())).size !== rows.length) return toast("16 different team names needed");
-  const cons = rows.filter(r => r.con).map(r => r.con);
+  const st = S.state, rows = [...document.querySelectorAll(".srow")];
+  const ren = {}; rows.forEach(x => ren[x.dataset.t] = x.querySelector(".nm").value.trim());
+  const names = st.teams.map(t => ren[t] || t);
+  if (names.some(n => !n) || new Set(names.map(n => n.toLowerCase())).size !== names.length) return toast("every team needs a different name");
+  const cons = rows.map(x => x.querySelector("select").value).filter(Boolean);
   if (new Set(cons).size !== cons.length) return toast("a contract is picked for two teams");
-  const groups = {}; rows.forEach(r => (groups[r.g] = groups[r.g] || []).push(r.name));
-  const mapping = {}; rows.forEach(r => r.con && (mapping[r.con] = r.name));
-  const j = await post("/api/setup", {teams: order.map(r => r.name), groupMode: "given", groups, ratings,
-    pBeat: +$("supB").value, goals: +$("supG").value, mapping});
-  if (j.ok) { toast("teams saved - model re-run"); await refresh(); MTAB = "groups"; showModal(); }
+  const mapping = {}, tiers = {}, regions = {};
+  rows.forEach(x => { const old = x.dataset.t, n = ren[old], c = x.querySelector("select").value;
+    if (c) mapping[c] = n; tiers[n] = st.tiers[old]; regions[n] = x.querySelector(".rg").value.trim() || st.regions[old]; });
+  const groups = Object.fromEntries(Object.entries(st.groups).map(([g, ts]) => [g, ts.map(t => ren[t] || t)]));
+  const bo = {}; for (const k of ["qual", "swiss", "ko", "final"]) bo[k] = +$("bo_" + k).value;
+  const j = await post("/api/setup", {teams: names, groups, tiers, regions, mapping, pBeat: +$("supB").value, bo});
+  if (j.ok) { toast("saved - model re-run"); await refresh(); showModal(); }
 }
-const PAIRS = [[0, 1], [2, 3], [0, 2], [1, 3], [0, 3], [1, 2]];
-const NODE = [[62, 24], [238, 24], [62, 266], [238, 266]];
-function modalGroups() {
-  const fx = S.fixtures.filter(f => !f.ko), st = S.state;
-  let h = `<div class="mut" style="margin-bottom:8px">Each box sits on the line between two teams: the number nearest a team is that team's goals. Leave both empty to clear a result.</div><div class="gview">`;
-  for (const g of Object.keys(st.groups)) {
-    const m = st.groups[g];
-    h += `<div><h3>Group ${g}</h3><div class="gbox"><svg width="300" height="290"><defs><marker id="ar${g}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0L10,5L0,10z" fill="#58a6ff"/></marker></defs>`;
-    const boxes = [];
-    for (const [p, q] of PAIRS) {
-      const [x1, y1] = NODE[p], [x2, y2] = NODE[q], dx = x2 - x1, dy = y2 - y1;
-      const cut = Math.min(56 / Math.abs(dx || 1e-9), 19 / Math.abs(dy || 1e-9));
-      h += `<line x1="${x1 + dx * cut}" y1="${y1 + dy * cut}" x2="${x2 - dx * cut}" y2="${y2 - dy * cut}" stroke="#58a6ff88" stroke-width="1.5" marker-start="url(#ar${g})" marker-end="url(#ar${g})"/>`;
-      const f = fx.find(f => f.group === g && f.pa === p && f.pb === q), t = p === 0 && q === 3 ? 0.3 : p === 1 && q === 2 ? 0.7 : 0.5;
-      const r = f && f.res || {}, col = Math.abs(dy) > Math.abs(dx);
-      boxes.push(`<div class="sbox ${col ? "col" : ""} ${r.ga != null ? "set" : ""}" data-id="${esc(f.id)}" data-a="${esc(f.a)}" data-b="${esc(f.b)}" data-had="${r.ga != null ? 1 : 0}" style="left:${x1 + dx * t}px;top:${y1 + dy * t}px">
-        <input inputmode="numeric" class="ga" placeholder="${abbr(f.a)}" title="${esc(f.a)} goals" value="${r.ga ?? ""}"><input inputmode="numeric" class="gb" placeholder="${abbr(f.b)}" title="${esc(f.b)} goals" value="${r.gb ?? ""}"></div>`);
+
+// qualifier + Swiss: each round's record groups; pick who played whom, click the winner
+function modalSwiss() {
+  const fx = S.fixtures, q = fx.qual, qr = q.res || {};
+  const qa = JSON.stringify(q.a), qb = JSON.stringify(q.b);
+  let h = `<div class="qual"><h3 style="margin:0">Qualifier · Bo${S.state.bo.qual}</h3>`
+    + (qr.winner ? `<span class="${qr.winner === q.a ? "pos" : "mut"}"><b>${esc(q.a)}</b></span> ${qr.ga ?? ""} – ${qr.gb ?? ""} <span class="${qr.winner === q.b ? "pos" : "mut"}"><b>${esc(q.b)}</b></span>
+         <span class="mut">${esc(qr.winner)} through, ${esc(qr.winner === q.a ? q.b : q.a)} out</span><button onclick="saveResult('Q',null)">clear</button>`
+    : `<b>${esc(q.a)}</b> <input id="qga" class="num" style="width:36px" placeholder="-"> – <input id="qgb" class="num" style="width:36px" placeholder="-"> <b>${esc(q.b)}</b>
+       <button class="go" onclick='saveQual(${esc(qa)})'>${esc(q.a)} won</button><button class="go" onclick='saveQual(${esc(qb)})'>${esc(q.b)} won</button>
+       <span class="mut">series score optional</span>`) + `</div><div class="swiss">`;
+  for (const rd of fx.rounds) {
+    const used = new Set(rd.matches.flatMap(m => [m.a, m.b]));
+    h += `<div><h3>Round ${rd.round} · Bo${S.state.bo.swiss}</h3>`;
+    const groups = Object.entries(rd.groups);
+    if (!rd.open) h += `<div class="mut">opens when round ${rd.round - 1} is complete</div>`;
+    else if (!groups.length) h += `<div class="mut">-</div>`;
+    for (const [rec, teams] of groups) {
+      const [w, l] = rec.split("-").map(Number);
+      const ms = rd.matches.filter(m => teams.includes(m.a) || teams.includes(m.b));
+      const free = teams.filter(t => t && !used.has(t));
+      h += `<div class="bucket" style="border:2px solid ${recColor({w, l, status: "swiss"})}"><div class="bh"><span class="rec">${rec}</span><span class="mut">${teams.length} teams</span></div>
+        <div class="tchips">${teams.map(t => `<span class="tchip ${t && used.has(t) ? "used" : ""}" style="border-color:${recColor({w, l, status: "swiss"})}">${t ? `${esc(t)} <span class="rec">${rec}</span>` : '<i class="mut">qual. winner</i>'}</span>`).join("")}</div>`
+        + ms.map(m => `<div class="mline"><span class="${m.winner === m.a ? "w" : "l"}">${esc(m.a)}</span> v <span class="${m.winner === m.b ? "w" : "l"}">${esc(m.b)}</span><button title="clear this result" onclick='saveResult(${esc(JSON.stringify(m.id))},null)'>✕</button></div>`).join("")
+        + (free.length >= 2 ? `<div class="addm" data-r="${rd.round}"><select class="sa">${free.map(t => `<option>${esc(t)}</option>`).join("")}</select>
+            <select class="sb">${free.map((t, i) => `<option ${i === 1 ? "selected" : ""}>${esc(t)}</option>`).join("")}</select>
+            <button class="go" onclick="addSwiss(this,'a')">◀ won</button><button class="go" onclick="addSwiss(this,'b')">won ▶</button></div>` : "")
+        + `</div>`;
     }
-    h += `</svg>` + m.map((t, i) => { const rk = (S.rows.find(r => r.team === t) || {}).rank; return `<div class="gnode" style="left:${NODE[i][0]}px;top:${NODE[i][1]}px" title="${esc(t)}">${esc(t)}${rk ? ` <small>${rk.pts}pt</small>` : ""}</div>`; }).join("") + boxes.join("") + `</div></div>`;
+    h += `</div>`;
   }
-  $("mbd").innerHTML = h + "</div>";
-  $("mft").innerHTML = `<span class="mut" style="margin-right:auto">${fx.filter(f => f.res && f.res.ga != null).length}/24 group games entered</span><button onclick="closeModal()">Cancel</button><button class="on" onclick="saveGroups()">Save results</button>`;
+  $("mbd").innerHTML = h + `</div>`;
+  $("mft").innerHTML = `<span class="legend" style="margin-right:12px">${legendHTML()}</span><span class="mut" style="margin-right:auto">Pick the two teams that played (same record) and click the winner's side. Round 1: Tier 1 v Tier 3, Tier 2 v Tier 2, no two teams from one region. ${fx.swissDone ? "<b class='pos'>Swiss stage complete - knockout next.</b>" : ""}</span><button onclick="closeModal()">Close</button>`;
 }
-async function saveGroups() {
-  const res = {}; let bad = false;
-  document.querySelectorAll(".sbox").forEach(b => {
-    const a = b.querySelector(".ga"), c = b.querySelector(".gb"); a.classList.remove("bad"); c.classList.remove("bad");
-    const ga = a.value.trim() === "" ? null : +a.value, gb = c.value.trim() === "" ? null : +c.value;
-    if ((ga == null) !== (gb == null) || ga < 0 || gb < 0 || (ga != null && !(Number.isInteger(ga) && Number.isInteger(gb)))) { bad = true; a.classList.add("bad"); c.classList.add("bad"); return; }
-    const old = (S.fixtures.find(f => f.id === b.dataset.id) || {}).res;
-    if (ga == null) { if (old) res[b.dataset.id] = null; return; }
-    if (!old || old.ga !== ga || old.gb !== gb) res[b.dataset.id] = {a: b.dataset.a, b: b.dataset.b, ga, gb};
-  });
-  if (bad) return toast("a score needs both numbers");
-  if (!Object.keys(res).length) return toast("nothing changed");
-  const j = await post("/api/results", {results: res});
-  if (j.ok) { toast(`${Object.keys(res).length} result(s) saved - repriced`); await refresh(); MTAB = S.stage === "groups" ? "groups" : "ko"; showModal(); }
+function saveQual(winner) {
+  const q = S.fixtures.qual, ga = $("qga").value.trim(), gb = $("qgb").value.trim();
+  saveResult("Q", {a: q.a, b: q.b, winner, ga: ga === "" ? null : +ga, gb: gb === "" ? null : +gb});
 }
-const KO_COLS = [["Crossovers", ["C2", "C3", "C1", "C4"]], ["Quarter-finals", ["QFA", "QFB", "QFC", "QFD"]], ["Semi-finals", ["SF1", "SF2"]], ["Final / 3rd place", ["F", "T"]]];
-const KO_NAME = {C1: "C1 · 2A v 3B", C2: "C2 · 2B v 3A", C3: "C3 · 2C v 3D", C4: "C4 · 2D v 3C", QFA: "QF A", QFB: "QF B", QFC: "QF C", QFD: "QF D", SF1: "Semi 1", SF2: "Semi 2", F: "Final", T: "3rd place"};
-let KOW = {};
+function addSwiss(btn, side) {
+  const box = btn.closest(".addm"), a = box.querySelector(".sa").value, b = box.querySelector(".sb").value, r = +box.dataset.r;
+  if (a === b) return toast("pick two different teams");
+  saveResult(`S${r}:${a}-${b}`, {a, b, winner: side === "a" ? a : b, round: r});
+}
+
+// knockout: QF slots from the 3-0 / 3-1 / 3-2 pools, then the bracket
+const KO_COLS = [["Quarter-finals", ["QF1", "QF2", "QF3", "QF4"]], ["Semi-finals", ["SF1", "SF2"]], ["Grand Final", ["F"]]];
+const KO_NAME = {QF1: "QF1 · 3-1 v 3-1", QF2: "QF2 · 3-2 v 3-0", QF3: "QF3 · 3-1 v 3-2", QF4: "QF4 · 3-0 v 3-2", SF1: "SF1 · QF1 v QF2", SF2: "SF2 · QF3 v QF4", F: "Grand Final"};
 function modalKO() {
-  KOW = {};
-  const fx = Object.fromEntries(S.fixtures.filter(f => f.ko).map(f => [f.id, f]));
-  const side = (f, w) => { const t = f[w], r = f.res || {}, src = f[w === "a" ? "srcA" : "srcB"];
-    return `<div class="tm ${t ? "" : "tbd"} ${t && r.winner === t ? "w" : ""}" data-w="${w}" onclick="koWin(this)"><span>${t ? esc(t) : esc(src)}</span>
-      <input type="number" min="0" class="g${w}" value="${r["g" + w] ?? ""}" ${t ? "" : "disabled"} onclick="event.stopPropagation()" placeholder="-"></div>`; };
-  $("mbd").innerHTML = (S.stage === "groups" ? `<div class="mut" style="margin-bottom:8px">Group stage isn't finished: the bracket fills in as group results are entered.</div>` : "")
-    + `<div class="ko">` + KO_COLS.map(([n, ids]) => `<div class="kcol"><h3>${n}</h3>` + ids.map(id => { const f = fx[id];
-      return `<div class="km" data-id="${id}" data-a="${esc(f.a || "")}" data-b="${esc(f.b || "")}"><div class="lb">${KO_NAME[id]}</div>${side(f, "a")}${side(f, "b")}</div>`; }).join("") + `</div>`).join("") + `</div>`;
-  $("mft").innerHTML = `<span class="mut" style="margin-right:auto">Click a team to mark the winner (needed when it went to penalties). Scores optional.</span><button onclick="closeModal()">Cancel</button><button class="on" onclick="saveKO()">Save results</button>`;
+  const fx = S.fixtures, ko = Object.fromEntries(fx.ko.map(k => [k.id, k]));
+  const taken = new Set(fx.ko.filter(k => k.need && k.a).flatMap(k => [k.a, k.b]));
+  const box = id => {
+    const k = ko[id], r = k.res || {}, J = esc(JSON.stringify(id));
+    let inner;
+    if (r.winner) inner = [k.a || r.a, k.b || r.b].map(t => `<div class="tm ${t === r.winner ? "w" : ""}"><span>${tname(t)}</span></div>`).join("")
+      + `<div class="tm" style="cursor:default"><button onclick='saveResult(${J},null)'>clear</button></div>`;
+    else if (k.need && !(k.a && k.b)) {
+      const pool = rec => (fx.pools[rec] || []).filter(t => !taken.has(t));
+      inner = fx.swissDone ? `<div class="tm" style="cursor:default"><select class="ka">${pool(k.need[0]).map(t => `<option>${esc(t)}</option>`).join("")}</select>
+            <select class="kb">${pool(k.need[1]).map((t, i) => `<option ${k.need[0] === k.need[1] && i === 1 ? "selected" : ""}>${esc(t)}</option>`).join("")}</select></div>
+          <div class="tm" style="cursor:default"><button class="go" onclick='koPick(this,${J},"a")'>◀ won</button><button class="go" onclick='koPick(this,${J},"b")'>won ▶</button></div>`
+        : `<div class="tm tbd"><span>${k.need[0]} team</span></div><div class="tm tbd"><span>${k.need[1]} team</span></div>`;
+    } else {
+      const a = k.a, b = k.b, Ja = esc(JSON.stringify(a)), Jb = esc(JSON.stringify(b));
+      inner = a && b ? `<div class="tm" onclick='saveResult(${J},{a:${Ja},b:${Jb},winner:${Ja}})' title="click the winner"><span>${tname(a)}</span></div>
+          <div class="tm" onclick='saveResult(${J},{a:${Ja},b:${Jb},winner:${Jb}})' title="click the winner"><span>${tname(b)}</span></div>`
+        : `<div class="tm tbd"><span>${esc(a || k.srcA)}</span></div><div class="tm tbd"><span>${esc(b || k.srcB)}</span></div>`;
+    }
+    return `<div class="km"><div class="lb">${KO_NAME[id]}</div>${inner}</div>`;
+  };
+  $("mbd").innerHTML = (fx.swissDone ? "" : `<div class="mut" style="margin-bottom:8px">The Swiss stage isn't finished: the quarter-finals open once every team has 3 wins or 3 losses.</div>`)
+    + `<div class="ko">` + KO_COLS.map(([n, ids]) => `<div class="kwrap"><h3>${n}</h3><div class="kcol">${ids.map(box).join("")}</div></div>`).join("") + `</div>`;
+  $("mft").innerHTML = `<span class="mut" style="margin-right:auto">Quarter-finals: pick the two teams from their record pools, then the winner's side. Later rounds: click the winner.</span><button onclick="closeModal()">Close</button>`;
 }
-function koWin(el) { const m = el.closest(".km"); if (!m.dataset[el.dataset.w]) return; const was = el.classList.contains("w");
-  m.querySelectorAll(".tm").forEach(x => x.classList.remove("w")); if (!was) el.classList.add("w"); KOW[m.dataset.id] = true; }
-async function saveKO() {
-  const res = {};
-  for (const m of document.querySelectorAll(".km")) {
-    const id = m.dataset.id, a = m.dataset.a, b = m.dataset.b; if (!a || !b) continue;
-    const ga = m.querySelector(".ga").value, gb = m.querySelector(".gb").value, wEl = m.querySelector(".tm.w");
-    const old = (S.fixtures.find(f => f.id === id) || {}).res;
-    let winner = wEl ? m.dataset[wEl.dataset.w] : null;
-    if (!winner && ga !== "" && gb !== "" && +ga !== +gb) winner = +ga > +gb ? a : b;
-    if (!winner) { if (old && (KOW[id] || ga === "" && gb === "")) res[id] = null; continue; }
-    const r = {a, b, winner, ga: ga === "" ? null : +ga, gb: gb === "" ? null : +gb};
-    if (!old || JSON.stringify(old) !== JSON.stringify(r)) res[id] = r;
-  }
-  if (!Object.keys(res).length) return toast("nothing changed - pick winners or enter scores");
-  const j = await post("/api/results", {results: res});
-  if (j.ok) { toast("knockout results saved - repriced"); await refresh(); showModal(); }
+function koPick(btn, id, side) {
+  const k = btn.closest(".km"), a = k.querySelector(".ka").value, b = k.querySelector(".kb").value;
+  if (!a || !b || a === b) return toast("pick two different teams");
+  saveResult(id, {a, b, winner: side === "a" ? a : b});
 }
 // settings: everything that isn't needed minute to minute
 const SETS = [["startWidth", "width right after a result", 1], ["narrowSecs", "seconds to narrow to the MM spread", 30],
   ["k","non-MM markets narrow to 2 × (k × σ(next result)", 0.1], ["c", "… + c)", 0.1],
-  ["maxPos", "max position per team", 1], ["hardExtra", "hard limit = max + this (free-money takes)", 1], ["budget", "max budget (worst-case loss)", 100],
+  ["hardExtra", "hard limit = max + this (free-money takes)", 1], ["budget", "max budget (worst-case loss)", 100],
   ["takeEdge", "take a price this far through our PA", 0.1], ["takeMax", "take: max lots", 1]];
 function openSettings() { MTAB = "settings"; showModal(); }
 function modalSettings() {

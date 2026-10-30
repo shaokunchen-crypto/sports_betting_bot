@@ -1,63 +1,127 @@
 {
+ "format": "swiss17",
  "teams": [
-  "Australia",
-  "belgium",
-  "Russia",
-  "Team4",
-  "Team5",
-  "Team6",
-  "Team7",
-  "Team8",
-  "Team9",
-  "Team10",
-  "Team11",
-  "Team12",
-  "Team13",
-  "Team14",
-  "Team15",
-  "Team16"
+  "Nova",
+  "Rogue",
+  "Echo",
+  "Pulse",
+  "Vertex",
+  "Kinetik",
+  "Drift",
+  "Vesper",
+  "Cipher",
+  "Onyx",
+  "Zenith",
+  "Strata",
+  "Omni",
+  "Flux",
+  "Null",
+  "Apex",
+  "Glaive"
  ],
- "groupMode": "given",
+ "regions": {
+  "Nova": "Na",
+  "Rogue": "Sa",
+  "Echo": "eu",
+  "Pulse": "Am",
+  "Vertex": "au",
+  "Kinetik": "Na",
+  "Drift": "Sa",
+  "Vesper": "eu",
+  "Cipher": "Am",
+  "Onyx": "au",
+  "Zenith": "Na",
+  "Strata": "Sa",
+  "Omni": "eu",
+  "Flux": "Am",
+  "Null": "au",
+  "Apex": "Na",
+  "Glaive": "Sa"
+ },
+ "tiers": {
+  "Nova": 1,
+  "Rogue": 1,
+  "Echo": 1,
+  "Pulse": 1,
+  "Vertex": 1,
+  "Kinetik": 2,
+  "Drift": 2,
+  "Vesper": 2,
+  "Cipher": 2,
+  "Onyx": 2,
+  "Zenith": 2,
+  "Strata": 3,
+  "Omni": 3,
+  "Flux": 3,
+  "Null": 3,
+  "Apex": "Q",
+  "Glaive": "Q"
+ },
+ "ranks": {
+  "Nova": 1,
+  "Rogue": 1,
+  "Echo": 1,
+  "Pulse": 1,
+  "Vertex": 1,
+  "Kinetik": 2,
+  "Drift": 2,
+  "Vesper": 2,
+  "Cipher": 2,
+  "Onyx": 2,
+  "Zenith": 3,
+  "Strata": 3,
+  "Omni": 3,
+  "Flux": 3,
+  "Null": 3,
+  "Apex": 4,
+  "Glaive": 4
+ },
  "groups": {
-  "A": [
-   "Australia",
-   "Team8",
-   "Team9",
-   "Team16"
+  "Tier 1": [
+   "Nova",
+   "Rogue",
+   "Echo",
+   "Pulse",
+   "Vertex"
   ],
-  "B": [
-   "belgium",
-   "Team7",
-   "Team10",
-   "Team15"
+  "Tier 2": [
+   "Kinetik",
+   "Drift",
+   "Vesper",
+   "Cipher",
+   "Onyx",
+   "Zenith"
   ],
-  "C": [
-   "Russia",
-   "Team6",
-   "Team11",
-   "Team14"
+  "Tier 3": [
+   "Strata",
+   "Omni",
+   "Flux",
+   "Null"
   ],
-  "D": [
-   "Team4",
-   "Team5",
-   "Team12",
-   "Team13"
+  "Qualifier": [
+   "Apex",
+   "Glaive"
   ]
  },
- "pBeat": 0.6,
- "goals": 2.5,
- "kappa": 0.0,
- "nudges": {},
+ "pBeat": 0.75,
+ "bo": {
+  "qual": 5,
+  "swiss": 1,
+  "ko": 3,
+  "final": 5
+ },
  "confidence": "Low",
  "results": {},
- "sims": 50000,
+ "sims": 20000,
  "ratings": {},
  "controls": {
   "deflPct": 0.5,
-  "autoDefl": true,
+  "autoDefl": false,
+  "deflCount": 3,
+  "maxPosAdj": {},
   "k": 1.0,
   "c": 1.0,
-  "maxPos": 20,
+  "maxPos": 10,
   "startWidth": 20.0,
   "narrowSecs": 600.0,
   "wideSince": 1793308840.8645103,
@@ -65,11 +129,11 @@
   "clickQty": 1,
   "market": "sports-betting-market-9278",
   "mapping": {
-   "Australia": "Australia",
-   "belgium": "belgium",
-   "Russia": "Russia"
+   "Australia": "Nova",
+   "belgium": "Rogue",
+   "Russia": "Echo"
   },
-  "mappingOk": false,
+  "mappingOk": true,
   "budget": 2000.0,
   "off": [],
   "rebateWidth": 3.0,
@@ -81,26 +145,19 @@
   "takeEdge": 1.0,
   "takeMax": 5,
   "theoAdj": {
-   "Russia": -0.09909999999999997
+   "Nova": -0.4024999999999963
   },
   "paAdj": {
-   "Russia": 1.1983270164310404
+   "Nova": 0.29999999999999716
   },
   "paKeep": {},
-  "edgeAdj": {
-   "belgium": 1.48
-  },
+  "edgeAdj": {},
   "hidden": [],
-  "layout": {
-   "rows": {}
-  },
+  "layout": {},
   "deflPos": {
-   "belgium": -5.0,
-   "Russia": -4.0
+   "Rogue": -5.0,
+   "Echo": -4.0
   },
-  "deflAmt": {
-   "belgium": -7.4,
-   "Russia": -6.0
-  }
+  "deflAmt": {}
  }
 }

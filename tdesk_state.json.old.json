@@ -1,0 +1,106 @@
+{
+ "teams": [
+  "Australia",
+  "belgium",
+  "Russia",
+  "Team4",
+  "Team5",
+  "Team6",
+  "Team7",
+  "Team8",
+  "Team9",
+  "Team10",
+  "Team11",
+  "Team12",
+  "Team13",
+  "Team14",
+  "Team15",
+  "Team16"
+ ],
+ "groupMode": "given",
+ "groups": {
+  "A": [
+   "Australia",
+   "Team8",
+   "Team9",
+   "Team16"
+  ],
+  "B": [
+   "belgium",
+   "Team7",
+   "Team10",
+   "Team15"
+  ],
+  "C": [
+   "Russia",
+   "Team6",
+   "Team11",
+   "Team14"
+  ],
+  "D": [
+   "Team4",
+   "Team5",
+   "Team12",
+   "Team13"
+  ]
+ },
+ "pBeat": 0.6,
+ "goals": 2.5,
+ "kappa": 0.0,
+ "nudges": {},
+ "confidence": "Low",
+ "results": {},
+ "sims": 50000,
+ "ratings": {},
+ "controls": {
+  "deflPct": 0.5,
+  "autoDefl": false,
+  "k": 1.0,
+  "c": 1.0,
+  "maxPos": 20,
+  "startWidth": 20.0,
+  "narrowSecs": 600.0,
+  "wideSince": 1793308840.8645103,
+  "quoting": false,
+  "clickQty": 1,
+  "market": "sports-betting-market-9278",
+  "mapping": {
+   "Australia": "Australia",
+   "belgium": "belgium",
+   "Russia": "Russia"
+  },
+  "mappingOk": false,
+  "budget": 2000.0,
+  "off": [],
+  "rebateWidth": 3.0,
+  "nTight": 13,
+  "requoteMin": 0.0,
+  "newsPause": 5.0,
+  "hardExtra": 5,
+  "take": true,
+  "takeEdge": 1.0,
+  "takeMax": 5,
+  "theoAdj": {
+   "Russia": -0.09909999999999997
+  },
+  "paAdj": {
+   "Russia": 1.1983270164310404
+  },
+  "paKeep": {},
+  "edgeAdj": {
+   "belgium": 1.48
+  },
+  "hidden": [],
+  "layout": {
+   "rows": {}
+  },
+  "deflPos": {
+   "belgium": -5.0,
+   "Russia": -4.0
+  },
+  "deflAmt": {
+   "belgium": -7.4,
+   "Russia": -6.0
+  }
+ }
+}

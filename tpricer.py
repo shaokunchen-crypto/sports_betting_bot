@@ -1,23 +1,28 @@
-"""Tournament pricer (brief 1): 16 players, groups A-D, crossovers, QF, SF, final + 3rd place.
+"""Tournament pricer: 17 teams - a qualifier, a 16-team Swiss stage, an 8-team knockout.
 
-    payouts   group exit 0 · crossover exit 5 · QF exit 10 · 4th 25 · 3rd 50 · 2nd 75 · 1st 100  (pot 310)
-    bracket   C1 2A v 3B · C2 2B v 3A · C3 2C v 3D · C4 2D v 3C
-              QF A 1A v C2 · QF B 1D v C3 · QF C 1B v C1 · QF D 1C v C4
-              SF1 QF A v QF B · SF2 QF C v QF D · final SF winners · 3rd place SF losers
-    groups    round robin, 3/1/0; tiebreak: points, goal difference, goals for, head-to-head, random
-    matches   Poisson goals: log λ_i = μ + g(d)/2, d = S_i - S_j, g(d) = d + κ·d·|d|  (β folded into S)
-    knockout  level after 90': extra time at λ/3, then a 50/50 shootout
-    strengths prior S_r = σ·Φ⁻¹(1 - (r - 0.5)/16) by seed (σ solved from P(seed 1 beats seed 16)),
-              optional nudges blended in by confidence; updated after every result by MAP
-              (Gaussian prior + Poisson likelihood of every score), covariance from the Hessian.
+    qualifier  the two Tier "Q" teams (Na #4 v Sa #4), Best-of-5: winner joins the Swiss stage as a
+               Tier 3 team, loser is out (0)
+    Swiss      16 teams, 5 rounds at most, paired with teams on the same win/loss record:
+               3 wins = knockout, 3 losses = out (0). Round 1: Tier 1 v Tier 3, Tier 2 v Tier 2,
+               never two teams from the same region. Later rounds: random among the same record
+               (rematches are not avoided - a small approximation)
+    knockout   QF1 3-1 v 3-1 · QF2 3-2 v 3-0 · QF3 3-1 v 3-2 · QF4 3-0 v 3-2 (drawn within each record)
+               SF1 QF1 v QF2 · SF2 QF3 v QF4 · Grand Final
+    payouts    1st 100 · 2nd 60 · 3rd-4th 35 · 5th-8th 20 · 9th-17th 0   (pot 310)
+    matches    each game: P(i beats j) = 1 / (1 + e^-(S_i - S_j)); a Best-of-k series is played from
+               that (lengths in st["bo"]: qualifier 5, Swiss / knockout / final configurable)
+    strengths  prior S = σ·Φ⁻¹(1 - (r - 0.5)/N) for each team's seed value r (1 = strongest; any
+               number, e.g. 2.4, to say how close two teams are), σ set so seed 1 beats seed N in one
+               game with probability pBeat; updated after every result by MAP (Gaussian prior +
+               the game-by-game likelihood), covariance from the Hessian.
 
-Monte Carlo (numpy, vectorised): draw strengths from the posterior, play everything not yet
-played, apply tiebreakers, play the bracket, record payouts. theo = mean payout (always 310 in
-total). σ_next = how much a player's theo would move on their NEXT match's result (W/D/L or
-win/lose), from the same simulations.
+Monte Carlo (numpy, vectorised): draw strengths from the posterior, play everything not entered yet,
+record payouts. theo = mean payout (always 310 in total). σ_next = how much a team's theo moves on
+its NEXT match's result, from the same simulations.
 
     python tpricer.py      # self-tests
 """
+import itertools
 import json
 import math
 import os
@@ -27,354 +32,485 @@ import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATE_FILE = os.path.join(HERE, "tdesk_state.json")
-GROUPS = "ABCD"
-PAY = {"group": 0, "cross": 5, "qf": 10, "fourth": 25, "third": 50, "second": 75, "first": 100}
+FORMAT = "swiss17"
 TOTAL = 310
-ROUNDS = [[(0, 1), (2, 3)], [(0, 2), (1, 3)], [(0, 3), (1, 2)]]      # group schedule by position in the group list
-CROSS = [("C1", "2A", "3B"), ("C2", "2B", "3A"), ("C3", "2C", "3D"), ("C4", "2D", "3C")]
-QF = [("QFA", "1A", "C2"), ("QFB", "1D", "C3"), ("QFC", "1B", "C1"), ("QFD", "1C", "C4")]
-SF = [("SF1", "QFA", "QFB"), ("SF2", "QFC", "QFD")]
-KO_ORDER = [m for m, _, _ in CROSS] + [m for m, _, _ in QF] + ["SF1", "SF2", "F", "T"]
-PRESETS = {"Even field": 0.40, "Moderate": 0.60, "Strong favourites": 0.75}
-CONFIDENCE = {"Low": (0.25, 0.35), "Medium": (0.5, 0.30), "High": (0.75, 0.25)}   # blend weight, prior sd
+PAY = {"champion": 100, "final": 60, "semi": 35, "quarter": 20, "out": 0}
+ROSTER = [("Nova", "Na", 1, 1), ("Rogue", "Sa", 1, 1), ("Echo", "eu", 1, 1), ("Pulse", "Am", 1, 1), ("Vertex", "au", 1, 1),
+          ("Kinetik", "Na", 2, 2), ("Drift", "Sa", 2, 2), ("Vesper", "eu", 2, 2), ("Cipher", "Am", 2, 2), ("Onyx", "au", 2, 2),
+          ("Zenith", "Na", 2, 3), ("Strata", "Sa", 3, 3), ("Omni", "eu", 3, 3), ("Flux", "Am", 3, 3), ("Null", "au", 3, 3),
+          ("Apex", "Na", "Q", 4), ("Glaive", "Sa", "Q", 4)]          # (team, region, pot, rank within its region)
+POTS = {1: "Tier 1", 2: "Tier 2", 3: "Tier 3", "Q": "Qualifier"}
+QF_DRAW = [("QF1", "3-1", "3-1"), ("QF2", "3-2", "3-0"), ("QF3", "3-1", "3-2"), ("QF4", "3-0", "3-2")]
+SF = [("SF1", "QF1", "QF2"), ("SF2", "QF3", "QF4")]
+KO_ORDER = ["QF1", "QF2", "QF3", "QF4", "SF1", "SF2", "F"]
+SWISS_ROUNDS = 5
+PRESETS = {"Even field": 0.60, "Moderate": 0.75, "Strong favourites": 0.85}
+CONFIDENCE = {"Low": 0.35, "Medium": 0.30, "High": 0.25}    # prior sd of a strength, x sigma
+BO = {"qual": 5, "swiss": 1, "ko": 3, "final": 5}
 
 
 def default_state():
-    teams = [f"Team{i}" for i in range(1, 17)]
-    return {"teams": teams, "groupMode": "snake", "groups": snake(teams), "pBeat": 0.60, "goals": 2.5,
-            "kappa": 0.0, "nudges": {}, "confidence": "Low", "results": {}, "sims": 50000, "ratings": {}}
+    teams = [t for t, _, _, _ in ROSTER]
+    tier = {t: k for t, _, k, _ in ROSTER}
+    return {"format": FORMAT, "teams": teams, "regions": {t: r for t, r, _, _ in ROSTER}, "tiers": tier,
+            "ranks": {t: k for t, _, _, k in ROSTER},
+            "groups": pots(teams, tier), "pBeat": PRESETS["Moderate"], "bo": dict(BO),
+            "confidence": "Low", "results": {}, "sims": 20000, "ratings": {}}
 
 
-def snake(teams):
-    """1-4 -> A-D, 5-8 -> D-A, 9-12 -> A-D, 13-16 -> D-A."""
-    g = {x: [] for x in GROUPS}
-    for r, t in enumerate(teams):
-        row, col = divmod(r, 4)
-        g[GROUPS[col] if row % 2 == 0 else GROUPS[3 - col]].append(t)
-    return g
+def pots(teams, tier):
+    """The seeding pots (the tiers), as {pot name: [teams]}."""
+    return {name: [t for t in teams if tier.get(t) == k] for k, name in POTS.items()}
+
+
+# keyed by team name in the dashboard's controls: no meaning once the teams change
+TEAM_CONTROLS = ("theoAdj", "paAdj", "paKeep", "edgeAdj", "off", "hidden", "layout", "mapping", "deflPos", "deflAmt",
+                 "maxPosAdj")
 
 
 def load_state():
+    """The saved state. A state from an older tournament format is kept as tdesk_state.json.old.json
+    and replaced by this format's defaults (settings that don't depend on the teams are kept)."""
     try:
         with open(STATE_FILE, encoding="utf-8") as f:
-            return {**default_state(), **json.load(f)}
+            saved = json.load(f)
     except (OSError, ValueError):
         return default_state()
+    if saved.get("format") == FORMAT:
+        return {**default_state(), **saved}
+    with open(STATE_FILE + ".old.json", "w", encoding="utf-8") as f:
+        json.dump(saved, f, indent=1)
+    ctl = {k: v for k, v in saved.get("controls", {}).items() if k not in TEAM_CONTROLS}
+    st = {**default_state(), "controls": {**ctl, "mappingOk": False, "quoting": False, "maxPos": 10}}
+    _write(st)
+    return st
 
 
 def save_state(st):
     teams = [str(t).strip() for t in st["teams"]]
-    if len(teams) != 16 or len(set(t.lower() for t in teams)) != 16 or not all(teams):
-        raise ValueError("need 16 different team names in seed order")
-    groups = snake(teams) if st.get("groupMode") == "snake" else {g: [str(t).strip() for t in st["groups"][g]] for g in GROUPS}
-    if sorted(t for g in GROUPS for t in groups[g]) != sorted(teams) or any(len(groups[g]) != 4 for g in GROUPS):
-        raise ValueError("groups must hold each of the 16 teams exactly once, 4 per group")
-    st = {**st, "teams": teams, "groups": groups}
-    with open(STATE_FILE + ".tmp", "w", encoding="utf-8") as f:
-        json.dump(st, f, indent=1)
-    os.replace(STATE_FILE + ".tmp", STATE_FILE)
+    if len(teams) < 4 or len(set(t.lower() for t in teams)) != len(teams) or not all(teams):
+        raise ValueError("team names must all be different")
+    groups = {g: [str(t).strip() for t in ts] for g, ts in st["groups"].items()}
+    if sorted(t for ts in groups.values() for t in ts) != sorted(teams):
+        raise ValueError("the pots must hold each team exactly once")
+    if any(t not in st["tiers"] or t not in st["regions"] for t in teams):
+        raise ValueError("every team needs a tier and a region")
+    st = {**st, "format": FORMAT, "teams": teams, "groups": groups}
+    _write(st)
     return st
 
 
+def _write(st):
+    with open(STATE_FILE + ".tmp", "w", encoding="utf-8") as f:
+        json.dump(st, f, indent=1)
+    os.replace(STATE_FILE + ".tmp", STATE_FILE)
+
+
 # --- match model ----------------------------------------------------------------------------
-def lam(si, sj, mu, kappa=0.0):
-    d = si - sj
-    g = d + kappa * d * abs(d)
-    return math.exp(mu + g / 2), math.exp(mu - g / 2)
+def game_p(d):
+    """P(win one game) for strength difference d."""
+    return 1.0 / (1.0 + np.exp(-d))
 
 
-def _pmf(l, kmax=None):
-    """Poisson probabilities for 0..kmax goals; kmax reaches far enough for any rate (log space)."""
-    kmax = kmax or int(l + 12 * math.sqrt(l) + 15)
-    return [math.exp(k * math.log(l) - l - math.lgamma(k + 1)) if l > 0 else float(k == 0) for k in range(kmax + 1)]
+def series_p(p, bo):
+    """P(win a Best-of-bo series) from the single-game probability p."""
+    k = bo // 2 + 1
+    return sum(math.comb(k - 1 + j, j) * p ** k * (1 - p) ** j for j in range(k))
 
 
-def wdl(l1, l2):
-    k = int(max(l1, l2) + 12 * math.sqrt(max(l1, l2)) + 15)
-    a, b = _pmf(l1, k), _pmf(l2, k)
-    win = sum(a[i] * sum(b[:i]) for i in range(len(a)))
-    draw = sum(a[i] * b[i] for i in range(len(a)))
-    return win, draw, 1 - win - draw
-
-
-def mu_of(goals):
-    return math.log(goals / 2)
-
-
-def seed_strengths(sigma, n=16):
-    nd = NormalDist()
-    return np.array([sigma * nd.inv_cdf(1 - (r - 0.5) / n) for r in range(1, n + 1)])
-
-
-def solve_sigma(p_target, goals, kappa=0.0):
-    """σ so that seed 1 beats seed 16 in one (group) match with probability p_target."""
-    mu = mu_of(goals)
-    lo, hi = 0.0, 5.0
-    for _ in range(60):
-        mid = (lo + hi) / 2
-        s = seed_strengths(mid)
-        if wdl(*lam(s[0], s[15], mu, kappa))[0] < p_target:
-            lo = mid
-        else:
-            hi = mid
-    return (lo + hi) / 2
+def default_seeds(st):
+    """{team: seed} before any nudges. We only know each team's rank within its region, so teams with
+    the same rank share a seed: the middle of the places they'd take between them (five regional #1s
+    -> 3.0, the #2s -> 8.0, ...). Without ranks: seed order."""
+    teams, ranks = st["teams"], st.get("ranks") or {}
+    if not all(isinstance(ranks.get(t), (int, float)) for t in teams):
+        return {t: k + 1.0 for k, t in enumerate(teams)}
+    order = sorted(teams, key=lambda t: ranks[t])
+    out = {}
+    for rk in sorted({ranks[t] for t in teams}):
+        places = [k + 1 for k, t in enumerate(order) if ranks[t] == rk]
+        for t in teams:
+            if ranks[t] == rk:
+                out[t] = sum(places) / len(places)
+    return out
 
 
 def seed_values(st):
     """Each team's seed as a number (1 = strongest): st["ratings"][team] if set (any value, e.g. 2.4 =
-    between seeds 2 and 3, to say how close two teams are or give one a buff), else its seed position."""
-    r = st.get("ratings") or {}
-    return np.array([float(r[t]) if isinstance(r.get(t), (int, float)) else k + 1.0 for k, t in enumerate(st["teams"])])
+    between seeds 2 and 3, to say how close two teams are or give one a buff), else its default seed."""
+    r, d = st.get("ratings") or {}, default_seeds(st)
+    return np.array([float(r[t]) if isinstance(r.get(t), (int, float)) else d[t] for t in st["teams"]])
 
 
-def seed_strength(sigma, seed, n=16):
+def _z(r, n):
+    return NormalDist().inv_cdf(1 - (min(max(r, 0.55), n + 0.45) - 0.5) / n)
+
+
+def seed_strength(sigma, seed, n):
     """The seed curve S_r = σ·Φ⁻¹(1 - (r - 0.5)/n) for any seed value r (kept inside 0.55 .. n + 0.45)."""
-    nd = NormalDist()
-    return np.array([sigma * nd.inv_cdf(1 - (min(max(r, 0.55), n + 0.45) - 0.5) / n) for r in seed])
+    return np.array([sigma * _z(r, n) for r in seed])
+
+
+def solve_sigma(p_beat, n, best=1.0, worst=None):
+    """σ so that a team seeded `best` beats one seeded `worst` (default: seed 1 v seed n) in one game
+    with probability p_beat."""
+    return math.log(p_beat / (1 - p_beat)) / (_z(best, n) - _z(worst or n, n))
 
 
 # --- strengths: prior + MAP update ---------------------------------------------------------
 def prior(st):
-    sigma = solve_sigma(st["pBeat"], st["goals"], st.get("kappa", 0.0))
-    s0 = seed_strength(sigma, seed_values(st))           # integer seeds: exactly seed_strengths(sigma)
-    w, sd = CONFIDENCE.get(st.get("confidence", "Low"), CONFIDENCE["Low"])
-    tier = 2 * (s0.max() - s0.min()) / 15              # gap between neighbouring seeds, x2
-    nudge = np.array([float(st.get("nudges", {}).get(t, 0)) for t in st["teams"]])
-    return s0 + w * nudge * tier, sd * max(sigma, 0.05), sigma
+    n = len(st["teams"])
+    d = default_seeds(st).values()
+    sigma = solve_sigma(st["pBeat"], n, min(d), max(d))          # P(best-ranked beats worst-ranked) = pBeat
+    return seed_strength(sigma, seed_values(st), n), CONFIDENCE.get(st.get("confidence", "Low"), 0.35) * sigma, sigma
 
 
 def played(st):
-    """[(i, j, gi, gj)] for every match with a score entered (regulation score)."""
+    """[(i, j, games won by i, games won by j)] for every result entered (the series score if given,
+    else 1-0 to the winner)."""
     idx = {t: k for k, t in enumerate(st["teams"])}
     out = []
-    for mid, r in st.get("results", {}).items():
-        if r.get("a") in idx and r.get("b") in idx and r.get("ga") is not None and r.get("gb") is not None:
-            out.append((idx[r["a"]], idx[r["b"]], int(r["ga"]), int(r["gb"])))
+    for r in st.get("results", {}).values():
+        a, b, w = r.get("a"), r.get("b"), r.get("winner")
+        if a not in idx or b not in idx or w not in (a, b):
+            continue
+        ga, gb = r.get("ga"), r.get("gb")
+        if not (isinstance(ga, (int, float)) and isinstance(gb, (int, float))) or (ga > gb) != (w == a):
+            ga, gb = (1, 0) if w == a else (0, 1)
+        out.append((idx[a], idx[b], int(ga), int(gb)))
     return out
 
 
 def posterior(st):
     """MAP strengths and their covariance (Laplace). Newton steps on the log-posterior."""
     m0, sd0, sigma = prior(st)
-    mu, games = mu_of(st["goals"]), played(st)
-    s = m0.copy()
-    prec0 = 1.0 / sd0 ** 2
+    n = len(m0)
+    s, prec0 = m0.copy(), 1.0 / sd0 ** 2
+    hess = -np.eye(n) * prec0
     for _ in range(50):
         grad = -(s - m0) * prec0
-        hess = -np.eye(16) * prec0
-        for i, j, gi, gj in games:
-            li, lj = lam(s[i], s[j], mu)         # κ ignored in the fit (small; keeps the Hessian simple)
-            gr = (gi - li) / 2 - (gj - lj) / 2
-            grad[i] += gr
-            grad[j] -= gr
-            h = (li + lj) / 4
+        hess = -np.eye(n) * prec0
+        for i, j, wi, wj in played(st):
+            p = game_p(s[i] - s[j])
+            g, h = wi - (wi + wj) * p, (wi + wj) * p * (1 - p)
+            grad[i] += g
+            grad[j] -= g
             hess[i, i] -= h
             hess[j, j] -= h
             hess[i, j] += h
             hess[j, i] += h
         step = np.linalg.solve(hess, -grad)
         s = s + step
-        if np.max(np.abs(step)) < 1e-9:
+        if np.max(np.abs(step)) < 1e-10:
             break
     cov = np.linalg.inv(-hess)
     return s, (cov + cov.T) / 2, sigma
 
 
+# --- the format ------------------------------------------------------------------------------
+def qualifier_teams(st):
+    return [t for t in st["teams"] if st["tiers"].get(t) == "Q"]
+
+
+def round1_pairings(st, qwin, fixed=()):
+    """Every allowed round-1 draw given the qualifier winner, as lists of (a, b) team pairs: Tier 1 v
+    Tier 3 (+ the qualifier winner), Tier 2 v Tier 2, never the same region. Pairs already entered
+    (fixed) must be in it and are left out of what's returned. [] if the tiers don't fit that shape."""
+    tier, reg = st["tiers"], st["regions"]
+    t1 = [t for t in st["teams"] if tier.get(t) == 1]
+    t3 = [t for t in st["teams"] if tier.get(t) == 3] + ([qwin] if qwin else [])
+    t2 = [t for t in st["teams"] if tier.get(t) == 2]
+    if len(t1) != len(t3) or len(t2) % 2:
+        return []
+
+    def matchings(ts):
+        if not ts:
+            yield []
+            return
+        a = ts[0]
+        for k in range(1, len(ts)):
+            if reg[a] != reg[ts[k]]:
+                for m in matchings(ts[1:k] + ts[k + 1:]):
+                    yield [(a, ts[k])] + m
+    m2 = list(matchings(t2))
+    out = []
+    want = [frozenset(p) for p in fixed]
+    for perm in itertools.permutations(t3):
+        if any(reg[a] == reg[b] for a, b in zip(t1, perm)):
+            continue
+        for m in m2:
+            draw = list(zip(t1, perm)) + m
+            sets = [frozenset(p) for p in draw]
+            if all(w in sets for w in want):
+                out.append([p for p, s in zip(draw, sets) if s not in want])
+    return out
+
+
+def swiss_matches(st, rnd):
+    """Entered matches of Swiss round rnd: [(id, result)]."""
+    return [(k, r) for k, r in st.get("results", {}).items() if k.startswith(f"S{rnd}:")]
+
+
+def records(st, upto=SWISS_ROUNDS):
+    """Swiss win/loss record of every team from the results entered for rounds 1..upto."""
+    rec = {}
+    for rnd in range(1, upto + 1):
+        for _, r in swiss_matches(st, rnd):
+            if r.get("winner") and r["winner"] in (r.get("a"), r.get("b")):
+                w, l = r["winner"], r["b"] if r["winner"] == r["a"] else r["a"]
+                rec.setdefault(w, [0, 0])[0] += 1
+                rec.setdefault(l, [0, 0])[1] += 1
+    return rec
+
+
+def swiss_field(st):
+    """The 16 Swiss teams (None in the qualifier winner's place until it's entered)."""
+    q = qualifier_teams(st)
+    r = st.get("results", {}).get("Q") or {}
+    return [t for t in st["teams"] if t not in q] + [r.get("winner") if r.get("winner") in q else None]
+
+
+def swiss_done(st):
+    field = swiss_field(st)
+    rec = records(st)
+    return None not in field and all(max(rec.get(t, [0, 0])) >= 3 for t in field)
+
+
 # --- the simulation ---------------------------------------------------------------------------
 def simulate(st, n=None, seed=7, shift=None, post=None):
-    n = int(n or st.get("sims", 50000))
+    n = int(n or st.get("sims", 20000))
     rng = np.random.default_rng(seed)
     teams = st["teams"]
+    N = len(teams)
     idx = {t: k for k, t in enumerate(teams)}
     mean, cov, sigma = post or posterior(st)
     if shift is not None:
         mean = mean + shift
     S = rng.multivariate_normal(mean, cov, size=n, method="cholesky")
-    mu, kappa = mu_of(st["goals"]), st.get("kappa", 0.0)
-    res = st.get("results", {})
+    res, bo = st.get("results", {}), {**BO, **st.get("bo", {})}
     rows = np.arange(n)
+    nxt = np.full((n, N), -1, dtype=np.int8)            # each team's next unplayed match: 1 won, 0 lost
+    pay = np.zeros((n, N))
 
-    def lams(a, b):                                   # a, b: arrays (n,) of team indices
-        d = S[rows, a] - S[rows, b]
-        g = d + kappa * d * np.abs(d)
-        return np.exp(mu + g / 2), np.exp(mu - g / 2)
-
-    pts = np.zeros((n, 16))
-    gd = np.zeros((n, 16))
-    gf = np.zeros((n, 16))
-    gm = {}                                           # group match id -> (a, b, ga, gb)
-    for g in GROUPS:
-        members = [idx[t] for t in st["groups"][g]]
-        for rnd in ROUNDS:
-            for p, q in rnd:
-                a, b = members[p], members[q]
-                mid = f"{g}:{teams[a]}-{teams[b]}"
-                r = res.get(mid)
-                if r and r.get("ga") is not None:
-                    ga, gb = np.full(n, int(r["ga"])), np.full(n, int(r["gb"]))
-                else:
-                    la, lb = lams(np.full(n, a), np.full(n, b))
-                    ga, gb = rng.poisson(la), rng.poisson(lb)
-                gm[mid] = (a, b, ga, gb)
-                pts[:, a] += np.where(ga > gb, 3, np.where(ga == gb, 1, 0))
-                pts[:, b] += np.where(gb > ga, 3, np.where(ga == gb, 1, 0))
-                gd[:, a] += ga - gb
-                gd[:, b] += gb - ga
-                gf[:, a] += ga
-                gf[:, b] += gb
-    key = pts * 1e6 + (gd + 500) * 1e3 + gf           # points, then GD, then goals for
-    h2h = np.zeros((n, 16))                           # head-to-head points among teams level on all of that
-    for a, b, ga, gb in gm.values():
-        tied = key[:, a] == key[:, b]
-        h2h[:, a] += tied * np.where(ga > gb, 3, np.where(ga == gb, 1, 0))
-        h2h[:, b] += tied * np.where(gb > ga, 3, np.where(ga == gb, 1, 0))
-    full = key * 100 + h2h * 10 + rng.random((n, 16))  # ... then random
-    place = {}                                        # "1A" -> array of team index per sim
-    finish = np.zeros((n, 16), dtype=int)
-    for g in GROUPS:
-        members = np.array([idx[t] for t in st["groups"][g]])
-        order = np.argsort(-full[:, members], axis=1)
-        for k in range(4):
-            tm = members[order[:, k]]
-            place[f"{k + 1}{g}"] = tm
-            finish[rows, tm] = k + 1
-
-    pay = np.zeros((n, 16))
-    ko = {}
-
-    def play(mid, a, b):
-        r = res.get(mid)
-        if r and r.get("winner") in idx:              # entered result: that team goes through
+    def play(a, b, k, mid=None):
+        """Best-of-k between team arrays a and b; an entered result decides it where it fits."""
+        win = np.zeros(n, dtype=bool)
+        free = np.ones(n, dtype=bool)
+        r = res.get(mid) if mid else None
+        if r and r.get("winner") in idx:
             w = idx[r["winner"]]
-            win_a = a == w
-        else:
-            la, lb = lams(a, b)
-            ga, gb = rng.poisson(la), rng.poisson(lb)
-            et_a, et_b = rng.poisson(la / 3), rng.poisson(lb / 3)
-            level = ga == gb
-            ga2, gb2 = ga + np.where(level, et_a, 0), gb + np.where(level, et_b, 0)
-            win_a = np.where(ga2 != gb2, ga2 > gb2, rng.random(n) < 0.5)
-        w, l = np.where(win_a, a, b), np.where(win_a, b, a)
-        ko[mid] = (a, b, w)
-        return w, l
+            free = (a != w) & (b != w)
+            win = a == w
+        if free.any():
+            p = series_p(game_p(S[rows, a] - S[rows, b]), k)
+            sim = rng.random(n) < p
+            win = np.where(free, sim, win)
+            for x, xw in ((a, sim), (b, ~sim)):
+                m = free & (nxt[rows, x] == -1)
+                nxt[rows[m], x[m]] = xw[m]
+        return np.where(win, a, b), np.where(win, b, a)
 
-    for mid, x, y in CROSS:
-        w, l = play(mid, place[x], place[y])
-        place[mid] = w
-        pay[rows, l] = PAY["cross"]
-    for mid, x, y in QF:
-        w, l = play(mid, place[x], place[y])
-        place[mid] = w
-        pay[rows, l] = PAY["qf"]
+    # qualifier
+    q = qualifier_teams(st)
+    field = [idx[t] for t in teams if t not in q]
+    if len(q) == 2:
+        qw, ql = play(np.full(n, idx[q[0]]), np.full(n, idx[q[1]]), bo["qual"], "Q")
+        swiss = np.column_stack([np.tile(field, (n, 1)), qw])
+    else:
+        qw = None
+        swiss = np.tile(field, (n, 1))
+    W, L = np.zeros((n, N), dtype=int), np.zeros((n, N), dtype=int)
+    inswiss = np.zeros((n, N), dtype=bool)
+    inswiss[rows[:, None], swiss] = True
+
+    def record(w, l):
+        W[rows, w] += 1
+        L[rows, l] += 1
+
+    for rnd in range(1, SWISS_ROUNDS + 1):
+        busy = np.zeros((n, N), dtype=bool)
+        for mid, r in swiss_matches(st, rnd):                       # entered pairings (their winners if known)
+            if r.get("a") in idx and r.get("b") in idx:
+                a, b = np.full(n, idx[r["a"]]), np.full(n, idx[r["b"]])
+                record(*play(a, b, bo["swiss"], mid))
+                busy[rows, a] = busy[rows, b] = True
+        active = inswiss & (W < 3) & (L < 3) & ~busy
+        pairs = None
+        if rnd == 1:
+            fixed = [(r["a"], r["b"]) for _, r in swiss_matches(st, 1) if r.get("a") in idx and r.get("b") in idx]
+            qr = res.get("Q") or {}
+            qws = [qr["winner"]] if qr.get("winner") in q else q if len(q) == 2 else [None]
+            cands = {t: round1_pairings(st, t, fixed) for t in qws}
+            if all(cands.values()):
+                pairs = np.zeros((n, int(active[0].sum()) // 2, 2), dtype=int)
+                for t, draws in cands.items():
+                    arr = np.array([[(idx[a], idx[b]) for a, b in d] for d in draws], dtype=int)
+                    pick = arr[rng.integers(0, len(arr), n)]
+                    m = np.ones(n, dtype=bool) if t is None or len(qws) == 1 else (qw == idx[t])
+                    pairs[m] = pick[m]
+        if pairs is None:                                           # same record, random within it
+            key = np.where(active, (W * 4 + L) + rng.random((n, N)) * 0.5, np.inf)
+            m = int(active.sum(axis=1).min()) // 2 * 2
+            pairs = np.argsort(key, axis=1)[:, :m].reshape(n, m // 2, 2)
+        for s in range(pairs.shape[1]):
+            record(*play(pairs[:, s, 0], pairs[:, s, 1], bo["swiss"]))
+
+    # knockout draw: QF slots from the 3-0 / 3-1 / 3-2 pools; entered QFs keep their teams
+    adv = inswiss & (W >= 3)
+    taken = np.zeros((n, N), dtype=bool)
+    qf_fixed = {}
+    if swiss_done(st):
+        for mid, _, _ in QF_DRAW:
+            r = res.get(mid) or {}
+            if r.get("a") in idx and r.get("b") in idx:
+                qf_fixed[mid] = (np.full(n, idx[r["a"]]), np.full(n, idx[r["b"]]))
+                taken[:, idx[r["a"]]] = taken[:, idx[r["b"]]] = True
+    pools = {}
+    for rec, losses in (("3-0", 0), ("3-1", 1), ("3-2", 2)):
+        key = np.where(adv & (L == losses) & ~taken, rng.random((n, N)), np.inf)
+        pools[rec] = [np.argsort(key, axis=1), 0]
+
+    def draw(rec):
+        arr, k = pools[rec]
+        pools[rec][1] += 1
+        return arr[:, k]
+    winners = {}
+    for mid, ra, rb in QF_DRAW:
+        a, b = qf_fixed.get(mid) or (draw(ra), draw(rb))
+        w, l = play(a, b, bo["ko"], mid)
+        winners[mid] = w
+        pay[rows, l] = PAY["quarter"]
     sf = {}
     for mid, x, y in SF:
-        sf[mid] = play(mid, place[x], place[y])
-    champ, second = play("F", sf["SF1"][0], sf["SF2"][0])
-    third, fourth = play("T", sf["SF1"][1], sf["SF2"][1])
-    pay[rows, champ], pay[rows, second] = PAY["first"], PAY["second"]
-    pay[rows, third], pay[rows, fourth] = PAY["third"], PAY["fourth"]
+        sf[mid] = play(winners[x], winners[y], bo["ko"], mid)
+        pay[rows, sf[mid][1]] = PAY["semi"]
+    champ, second = play(sf["SF1"][0], sf["SF2"][0], bo["final"], "F")
+    pay[rows, champ], pay[rows, second] = PAY["champion"], PAY["final"]
 
     theo = pay.mean(axis=0)
-    out = {"teams": teams, "theo": theo, "sd": pay.std(axis=0), "cov": np.cov(pay, rowvar=False), "pay": pay,
-           "finish": np.stack([(finish == k).mean(axis=0) for k in range(1, 5)], axis=1),
-           "pQF": (pay >= PAY["qf"]).mean(axis=0), "pSF": (pay >= PAY["fourth"]).mean(axis=0),
-           "pF": (pay >= PAY["second"]).mean(axis=0), "pWin": (pay == PAY["first"]).mean(axis=0),
-           "mean": mean, "sdS": np.sqrt(np.diag(cov)), "sigma": sigma, "n": n,
-           "sigmaNext": _sigma_next(st, pay, gm, ko, idx, n), "totals": np.unique(pay.sum(axis=1))}
-    return out
+    return {"teams": teams, "theo": theo, "sd": pay.std(axis=0), "cov": np.cov(pay, rowvar=False), "pay": pay,
+            "pWin": (pay == PAY["champion"]).mean(axis=0), "pKO": (pay >= PAY["quarter"]).mean(axis=0),
+            "mean": mean, "sdS": np.sqrt(np.diag(cov)), "sigma": sigma, "n": n,
+            "sigmaNext": _sigma_next(pay, nxt), "totals": np.unique(pay.sum(axis=1))}
 
 
-def _sigma_next(st, pay, gm, ko, idx, n):
-    """Std dev of each player's theo across the outcomes of THEIR next match (same simulations)."""
-    res = st.get("results", {})
-    out = np.zeros(16)
-    for i in range(16):
-        buckets = None
-        for g in GROUPS:                              # next unplayed group match, in round order
-            if buckets is not None:
-                break
-            for mid, (a, b, ga, gb) in gm.items():
-                if mid.startswith(g + ":") and i in (a, b) and not (res.get(mid) or {}).get("ga") is not None:
-                    mine, theirs = (ga, gb) if i == a else (gb, ga)
-                    buckets = [mine > theirs, mine == theirs, mine < theirs]
-                    break
-        if buckets is None:                           # group stage done: next knockout match they're in
-            for mid in KO_ORDER:
-                if mid in ko and mid not in res:
-                    a, b, w = ko[mid]
-                    inn = (a == i) | (b == i)
-                    if inn.mean() > 0.999:
-                        buckets = [w == i, w != i]
-                        break
-        if buckets is None:
-            continue
-        p = np.array([bk.mean() for bk in buckets])
-        m = np.array([pay[bk, i].mean() if bk.any() else 0.0 for bk in buckets])
-        mean = (p * m).sum()
-        out[i] = math.sqrt(max(0.0, (p * (m - mean) ** 2).sum()))
+def _sigma_next(pay, nxt):
+    """Std dev of each team's theo across the outcomes of ITS next match (won / lost / no match left)."""
+    out = np.zeros(pay.shape[1])
+    for i in range(pay.shape[1]):
+        mean = pay[:, i].mean()
+        v = 0.0
+        for b in (1, 0, -1):
+            m = nxt[:, i] == b
+            if m.any():
+                v += m.mean() * (pay[m, i].mean() - mean) ** 2
+        out[i] = math.sqrt(v)
     return out
 
 
 def readouts(st, sim=None):
     mean, _, sigma = posterior(st)
-    mu = mu_of(st["goals"])
-    l1, l16 = lam(mean[0], mean[15], mu, st.get("kappa", 0.0))
-    eq = wdl(math.exp(mu), math.exp(mu))
-    return {"p1v16": wdl(l1, l16)[0], "p1v2": wdl(*lam(mean[0], mean[1], mu, st.get("kappa", 0.0)))[0],
-            "pDrawEq": eq[1], "xg1v16": [l1, l16], "pSeed1Wins": None if sim is None else float(sim["pWin"][0]),
-            "sigma": sigma}
+    return {"pTopBeatsBottom": float(game_p(mean[0] - mean[-1])), "sigma": sigma,
+            "pSeed1Wins": None if sim is None else float(sim["pWin"][0])}
 
 
+# --- what the results say for sure ---------------------------------------------------------------
 def feasible(st):
     """(min, max) payout still possible for each team, from the results entered so far."""
-    res, teams = st.get("results", {}), st["teams"]
-    rng_ = {t: [0, 100] for t in teams}
-    ko_res = {m: r for m, r in res.items() if m in KO_ORDER and r.get("winner")}
-    groups_done = all(f"{g}:" in " ".join(res) and sum(1 for m in res if m.startswith(g + ":") and res[m].get("ga") is not None) == 6 for g in GROUPS)
-    if groups_done:
-        sim = simulate(st, n=200, seed=1)             # group stage fully entered: places are fixed
-        for k, t in enumerate(teams):
-            f = int(np.round(sim["finish"][k].argmax())) + 1
-            rng_[t] = [10, 100] if f == 1 else [5, 100] if f in (2, 3) else [0, 0]
-    for m, r in ko_res.items():
-        w, a, b = r["winner"], r.get("a"), r.get("b")
-        l = b if w == a else a
-        if m.startswith("C"):
-            rng_[w][0], rng_[l] = max(rng_[w][0], 10), [5, 5]
-        elif m.startswith("QF"):
-            rng_[w][0], rng_[l] = max(rng_[w][0], 25), [10, 10]
-        elif m.startswith("SF"):
-            rng_[w], rng_[l] = [75, 100], [25, 50]
-        elif m == "F":
-            rng_[w], rng_[l] = [100, 100], [75, 75]
-        elif m == "T":
-            rng_[w], rng_[l] = [50, 50], [25, 25]
+    res = st.get("results", {})
+    rng_ = {t: [0, 100] for t in st["teams"]}
+    q = res.get("Q") or {}
+    if q.get("winner") and q["winner"] in (q.get("a"), q.get("b")):
+        rng_[q["b"] if q["winner"] == q["a"] else q["a"]] = [0, 0]
+    for t, (w, l) in records(st).items():
+        if t in rng_:
+            if l >= 3:
+                rng_[t] = [0, 0]
+            elif w >= 3:
+                rng_[t] = [PAY["quarter"], 100]
+    for mid in KO_ORDER:
+        r = res.get(mid) or {}
+        w = r.get("winner")
+        if w not in (r.get("a"), r.get("b")) or w not in rng_:
+            continue
+        l = r["b"] if w == r["a"] else r["a"]
+        if mid.startswith("QF"):
+            rng_[w][0], rng_[l] = max(rng_[w][0], PAY["semi"]), [PAY["quarter"]] * 2
+        elif mid.startswith("SF"):
+            rng_[w], rng_[l] = [PAY["final"], 100], [PAY["semi"]] * 2
+        else:
+            rng_[w], rng_[l] = [100, 100], [PAY["final"]] * 2
     return rng_
 
 
 def standings(st):
-    """Group tables from the scores entered so far: {team: {rank, pts, p, gd, gf}} (points, GD, GF, seed)."""
-    res, out = st.get("results", {}), {}
-    for g in GROUPS:
-        tab = {t: {"pts": 0, "p": 0, "gd": 0, "gf": 0} for t in st["groups"][g]}
-        for mid, r in res.items():
-            if mid.startswith(g + ":") and r.get("ga") is not None and r.get("a") in tab and r.get("b") in tab:
-                for t, f, a in ((r["a"], r["ga"], r["gb"]), (r["b"], r["gb"], r["ga"])):
-                    tab[t]["p"] += 1
-                    tab[t]["gd"] += f - a
-                    tab[t]["gf"] += f
-                    tab[t]["pts"] += 3 if f > a else 1 if f == a else 0
-        order = sorted(tab, key=lambda t: (-tab[t]["pts"], -tab[t]["gd"], -tab[t]["gf"], st["teams"].index(t)))
-        for k, t in enumerate(order):
-            out[t] = {**tab[t], "rank": k + 1}
+    """{team: {"w", "l", "status"}}: the Swiss record so far, status qual / swiss / adv / out."""
+    rec = records(st)
+    q = qualifier_teams(st)
+    qr = st.get("results", {}).get("Q") or {}
+    out = {}
+    for t in st["teams"]:
+        w, l = rec.get(t, [0, 0])
+        if t in q and not qr.get("winner"):
+            status = "qual"
+        elif t in q and qr.get("winner") != t:
+            status = "out"
+        else:
+            status = "adv" if w >= 3 else "out" if l >= 3 else "swiss"
+        out[t] = {"w": w, "l": l, "status": status}
     return out
+
+
+def fixtures(st):
+    """Everything the results popup needs: the qualifier, each Swiss round's record groups and entered
+    matches, the knockout slots (the record pools once the Swiss stage is over)."""
+    res = st.get("results", {})
+    q = qualifier_teams(st)
+    field = swiss_field(st)
+    rounds = []
+    for rnd in range(1, SWISS_ROUNDS + 1):
+        rec = records(st, rnd - 1)
+        groups = {}
+        for t in field:
+            w, l = rec.get(t, [0, 0]) if t else (0, 0)
+            if w < 3 and l < 3:
+                groups.setdefault(f"{w}-{l}", []).append(t)
+        matches = [{"id": k, **r} for k, r in swiss_matches(st, rnd)]
+        n_teams = sum(len(ts) for ts in groups.values())
+        # a round opens once the one before is complete (its pairings depend on the records)
+        is_open = rnd == 1 or rounds[-1]["complete"]
+        rounds.append({"round": rnd, "groups": groups if is_open else {}, "matches": matches, "open": is_open,
+                       "complete": is_open and None not in field and 2 * len(matches) >= n_teams > 0})
+    done = swiss_done(st)
+    rec = records(st)
+    pools = {f"3-{l}": [t for t in field if t and rec.get(t, [0, 0]) == [3, l]] for l in range(3)} if done else {}
+    ko, win = [], {}
+    for mid, ra, rb in QF_DRAW:
+        r = res.get(mid) or {}
+        ko.append({"id": mid, "need": [ra, rb], "a": r.get("a"), "b": r.get("b"), "res": r or None})
+        win[mid] = r.get("winner")
+    for mid, x, y in SF + [("F", "SF1", "SF2")]:
+        r = res.get(mid) or {}
+        ko.append({"id": mid, "a": win.get(x), "b": win.get(y), "res": r or None, "srcA": f"winner {x}", "srcB": f"winner {y}"})
+        win[mid] = r.get("winner")
+    return {"qual": {"id": "Q", "a": q[0] if q else None, "b": q[1] if len(q) > 1 else None, "res": res.get("Q")},
+            "rounds": rounds, "swissDone": done, "pools": pools, "ko": ko}
+
+
+def stage(st):
+    res = st.get("results", {})
+    if not (res.get("Q") or {}).get("winner") and len(qualifier_teams(st)) == 2:
+        return "qualifier"
+    if not swiss_done(st):
+        return "swiss"
+    return "done" if (res.get("F") or {}).get("winner") else "knockout"
 
 
 # --- propagation: move some theos, the rest follow by covariance -----------------------------
 def propagate(cov, targets):
     """targets {team index: wanted change}. Every target hits exactly (all at once) and the other
     teams move by their regression on the targets (Gaussian conditional mean): the most correlated
-    teams move most. Any set whose total payout is fixed (all 16 = 310, the two finalists = 175 ...)
+    teams move most. Any set whose total payout is fixed (all = 310, the two finalists = 160 ...)
     has zero covariance with everything, so its total never moves."""
     out = np.zeros(cov.shape[0])
     T = sorted(i for i, d in targets.items() if d and cov[i, i] > 1e-9)
@@ -386,100 +522,84 @@ def propagate(cov, targets):
 
 # --- tests --------------------------------------------------------------------------------------
 def _test():
-    st = default_state()
-    assert snake(st["teams"])["A"] == ["Team1", "Team8", "Team9", "Team16"]
-    for g, ms in snake(list(range(1, 17))).items():
-        assert sum(ms) == 34, (g, ms)
-    for name, p in PRESETS.items():
-        sig = solve_sigma(p, 2.5)
-        s = seed_strengths(sig)
-        got = wdl(*lam(s[0], s[15], mu_of(2.5)))[0]
-        assert abs(got - p) < 0.01, (name, got)
-    # equal strengths: every theo 310/16; 1X = 36.25, 2X = 3X = 20.625
     import time
-    flat = {**st}
-    post = (np.zeros(16), np.eye(16) * 1e-12, 0.0)
+    st = default_state()
+    n = len(st["teams"])
+    assert n == 17 and len(qualifier_teams(st)) == 2
+    # seed curve: integer seeds reproduce it, 1.5 sits between seeds 1 and 2; σ hits pBeat exactly
+    sg = solve_sigma(0.75, n)
+    s = seed_strength(sg, range(1, n + 1), n)
+    assert abs(game_p(s[0] - s[-1]) - 0.75) < 1e-12 and s[1] < seed_strength(sg, [1.5], n)[0] < s[0]
+    assert abs(series_p(0.6, 1) - 0.6) < 1e-12 and abs(series_p(0.6, 3) - 0.648) < 1e-12 and abs(series_p(0.5, 5) - 0.5) < 1e-12
+    # same regional rank = same seed; P(a regional #1 beats a regional #4) = pBeat
+    d = default_seeds(st)
+    assert d["Nova"] == d["Vertex"] == 3.0 and d["Kinetik"] == 8.0 and d["Zenith"] == d["Null"] == 13.0 and d["Apex"] == 16.5
+    m0p = prior(st)[0]
+    assert abs(game_p(m0p[0] - m0p[-1]) - st["pBeat"]) < 1e-12 and m0p[0] == m0p[4] and m0p[10] == m0p[11]
+    # equal strengths: the 15 seeded teams 310/16 each, the two qualifiers half that; every sim pays 310
     t0 = time.time()
-    r = simulate(flat, n=100000, post=post)
+    flat = (np.zeros(n), np.eye(n) * 1e-12, 0.0)
+    r = simulate(st, n=40000, post=flat)
     ms = (time.time() - t0) * 1000
     assert list(r["totals"]) == [310], r["totals"]
-    assert np.all(np.abs(r["theo"] - 310 / 16) < 0.3), r["theo"]
-    ab = sum(r["theo"][[st["teams"].index(t) for t in st["groups"]["A"] + st["groups"]["B"]]])
-    assert abs(ab - 155) < 0.5, ab
-    pay, finish = _raw_sim(flat, 200000, post)       # knockout as coin flips = equal strengths, exactly
-    win_theo, two_theo = pay[finish == 1].mean(), pay[finish == 2].mean()
-    assert abs(win_theo - 36.25) < 0.3 and abs(two_theo - 20.625) < 0.3 and pay[finish == 4].max() == 0, (win_theo, two_theo)
-    # Poisson draw rate matches the analytic value
-    rng = np.random.default_rng(0)
-    l = math.exp(mu_of(2.5))
-    sim_draw = (rng.poisson(l, 400000) == rng.poisson(l, 400000)).mean()
-    assert abs(sim_draw - wdl(l, l)[1]) < 0.003
-    # tiebreakers: points, then GD, then goals for, then head-to-head
-    t = default_state()
-    g = t["groups"]["A"]                              # Team1, Team8, Team9, Team16
-    def res(a, b, ga, gb):
-        return {f"A:{a}-{b}": {"a": a, "b": b, "ga": ga, "gb": gb}}
-    t["results"] = {**res(g[0], g[1], 1, 0), **res(g[2], g[3], 0, 0), **res(g[0], g[2], 0, 1), **res(g[1], g[3], 2, 0),
-                    **res(g[0], g[3], 2, 0), **res(g[1], g[2], 1, 0)}
-    # points: g0 6, g1 6, g2 4, g3 1; g0 GD +2 (1-0, 0-1, 2-0) vs g1 GD +2 (0-1, 2-0, 1-0)... GF g0 3, g1 3 -> h2h: g0 beat g1
-    fin = simulate(t, n=2000)["finish"]
-    assert fin[t["teams"].index(g[0])][0] > 0.999 and fin[t["teams"].index(g[1])][1] > 0.999, fin
-    # fractional seeds: integer values reproduce the seed curve; 1.5 sits between seeds 1 and 2
-    sg = solve_sigma(0.6, 2.5)
-    assert np.allclose(seed_strength(sg, np.arange(1, 17)), seed_strengths(sg))
-    s15 = seed_strength(sg, [1.5])[0]
-    assert seed_strengths(sg)[1] < s15 < seed_strengths(sg)[0]
-    assert np.allclose(prior({**st, "ratings": {}})[0], prior(st)[0])
-    # MAP: a big upset moves strengths, but the prior limits it
-    m0 = posterior(st)[0]
-    up = {**st, "results": {f"A:Team16-Team1": {"a": "Team16", "b": "Team1", "ga": 5, "gb": 0}}}
-    m1 = posterior(up)[0]
-    assert m1[15] > m0[15] and m1[0] < m0[0] and m1[15] < m0[0], (m0[[0, 15]], m1[[0, 15]])
-    # propagation: lowering one team's theo raises every other (its closest rivals most), total stays 310
-    cov = simulate(st, n=20000, seed=11)["cov"]
-    mv = propagate(cov, {0: -5.0})
-    assert abs(mv[0] + 5) < 1e-9 and abs(mv.sum()) < 1e-6 and np.all(mv[1:] > 0) and mv[1] == mv[1:].max(), mv
-    print(f"tpricer.py: all tests passed (100k-equivalent sim {ms:.0f} ms for 200k; equal: 1X {win_theo:.2f}, 2X {two_theo:.2f}; "
-          f"A+B {ab:.1f}; Team1 -5 -> others +{mv[1:].sum():.2f})")
-
-
-def _raw_sim(st, n, post):
-    # equal-strength version that keeps the raw arrays (knockout = coin flips) - used only by the tests
-    rng = np.random.default_rng(13)
-    teams = st["teams"]
-    idx = {t: k for k, t in enumerate(teams)}
-    mu = mu_of(st["goals"])
-    pts = np.zeros((n, 16)); gd = np.zeros((n, 16)); gf = np.zeros((n, 16))
-    for g in GROUPS:
-        m = [idx[t] for t in st["groups"][g]]
-        for rnd in ROUNDS:
-            for p, q in rnd:
-                a, b = m[p], m[q]
-                ga, gb = rng.poisson(math.exp(mu), n), rng.poisson(math.exp(mu), n)
-                pts[:, a] += np.where(ga > gb, 3, np.where(ga == gb, 1, 0)); pts[:, b] += np.where(gb > ga, 3, np.where(ga == gb, 1, 0))
-                gd[:, a] += ga - gb; gd[:, b] += gb - ga; gf[:, a] += ga; gf[:, b] += gb
-    full = (pts * 1e6 + (gd + 500) * 1e3 + gf) * 100 + rng.random((n, 16))
-    rows = np.arange(n)
-    finish = np.zeros((n, 16), dtype=int)
-    place = {}
-    for g in GROUPS:
-        m = np.array([idx[t] for t in st["groups"][g]])
-        order = np.argsort(-full[:, m], axis=1)
-        for k in range(4):
-            place[f"{k + 1}{g}"] = m[order[:, k]]
-            finish[rows, m[order[:, k]]] = k + 1
-    pay = np.zeros((n, 16))
-    def coin(a, b):
-        w = rng.random(n) < 0.5
-        return np.where(w, a, b), np.where(w, b, a)
-    for mid, x, y in CROSS:
-        w, l = coin(place[x], place[y]); place[mid] = w; pay[rows, l] = 5
-    for mid, x, y in QF:
-        w, l = coin(place[x], place[y]); place[mid] = w; pay[rows, l] = 10
-    s1 = coin(place["QFA"], place["QFB"]); s2 = coin(place["QFC"], place["QFD"])
-    c, r2 = coin(s1[0], s2[0]); t3, t4 = coin(s1[1], s2[1])
-    pay[rows, c], pay[rows, r2], pay[rows, t3], pay[rows, t4] = 100, 75, 50, 25
-    return pay, finish
+    assert np.all(np.abs(r["theo"][:15] - 19.375) < 0.6) and np.all(np.abs(r["theo"][15:] - 9.6875) < 0.5), r["theo"]
+    pays = np.sort(r["pay"], axis=1)[:, ::-1]
+    assert (pays[:, :8] == [100, 60, 35, 35, 20, 20, 20, 20]).all() and (pays[:, 8:] == 0).all()
+    # round-1 draws: Tier 1 v Tier 3, Tier 2 v Tier 2, never the same region
+    for qw in qualifier_teams(st):
+        draws = round1_pairings(st, qw)
+        assert draws and all(len(d) == 8 for d in draws)
+        for d in draws[:200]:
+            for a, b in d:
+                assert st["regions"][a] != st["regions"][b] and {st["tiers"][a], st["tiers"][b]} in ({1, 3}, {1, "Q"}, {2})
+    # results: Nova beats Strata in round 1 -> Nova 1-0, re-priced, Strata can still go through
+    st2 = {**st, "results": {"Q": {"a": "Apex", "b": "Glaive", "winner": "Glaive", "ga": 3, "gb": 1},
+                             "S1:Nova-Strata": {"a": "Nova", "b": "Strata", "winner": "Strata"}}}
+    f = feasible(st2)
+    assert f["Apex"] == [0, 0] and f["Strata"] == [0, 100] and records(st2) == {"Strata": [1, 0], "Nova": [0, 1]}
+    m0, m1 = posterior(st)[0], posterior(st2)[0]
+    k = st["teams"].index
+    assert m1[k("Strata")] > m0[k("Strata")] and m1[k("Nova")] < m0[k("Nova")]          # an upset moves strengths ...
+    assert m1[k("Strata")] < m1[k("Nova")]                                               # ... but the prior holds
+    r2 = simulate(st2, n=20000)
+    assert r2["theo"][k("Apex")] == 0 and abs(r2["theo"].sum() - 310) < 1e-9 and r2["sigmaNext"][k("Nova")] > 0
+    assert stage(st) == "qualifier" and stage(st2) == "swiss"
+    fx = fixtures(st2)
+    assert fx["rounds"][0]["groups"]["0-0"][-1] == "Glaive" and len(fx["rounds"][0]["matches"]) == 1 and not fx["swissDone"]
+    assert not fx["rounds"][1]["open"] and fx["rounds"][1]["groups"] == {}           # round 2 waits for round 1
+    assert records(st2, 1) == {"Strata": [1, 0], "Nova": [0, 1]}
+    # a whole Swiss stage + knockout entered: payouts fixed for everyone
+    full = dict(st2["results"])
+    sim_rng = np.random.default_rng(3)
+    rec = {}
+    for rnd in range(1, SWISS_ROUNDS + 1):
+        stx = {**st, "results": full}
+        live = [t for t in swiss_field(stx) if max(records(stx).get(t, [0, 0])) < 3 and not any(
+            t in (r["a"], r["b"]) for _, r in swiss_matches(stx, rnd))]
+        live.sort(key=lambda t: (records(stx).get(t, [0, 0]), sim_rng.random()))
+        for a, b in zip(live[::2], live[1::2]):
+            full[f"S{rnd}:{a}-{b}"] = {"a": a, "b": b, "winner": a if sim_rng.random() < 0.5 else b}
+    stx = {**st, "results": full}
+    assert swiss_done(stx) and stage(stx) == "knockout", records(stx)
+    pools = fixtures(stx)["pools"]
+    assert [len(pools[k]) for k in ("3-0", "3-1", "3-2")] == [2, 3, 3], pools
+    p = {k: list(v) for k, v in pools.items()}
+    for mid, ra, rb in QF_DRAW:
+        a, b = p[ra].pop(), p[rb].pop()
+        full[mid] = {"a": a, "b": b, "winner": a}
+    full["SF1"] = {"a": full["QF1"]["a"], "b": full["QF2"]["a"], "winner": full["QF1"]["a"]}
+    full["SF2"] = {"a": full["QF3"]["a"], "b": full["QF4"]["a"], "winner": full["QF4"]["a"]}
+    full["F"] = {"a": full["QF1"]["a"], "b": full["QF4"]["a"], "winner": full["QF4"]["a"]}
+    stx = {**st, "results": full}
+    fz = feasible(stx)
+    assert all(lo == hi for lo, hi in fz.values()) and sum(lo for lo, _ in fz.values()) == 310 and stage(stx) == "done"
+    rz = simulate(stx, n=2000)
+    assert np.allclose(rz["theo"], [fz[t][0] for t in st["teams"]])
+    # propagation: lowering one team's theo raises the others, total stays 310
+    mv = propagate(r2["cov"], {0: -5.0})
+    assert abs(mv[0] + 5) < 1e-9 and abs(mv.sum()) < 1e-6
+    print(f"tpricer.py: all tests passed (40k sims {ms:.0f} ms; equal strengths: seeded "
+          f"{r['theo'][:15].mean():.2f}, qualifiers {r['theo'][15:].mean():.2f})")
 
 
 if __name__ == "__main__":

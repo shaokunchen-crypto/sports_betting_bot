@@ -5,3 +5,4 @@ tdesk_state.json.tmp
 __pycache__/
 .venv/
 .idea/
+tdesk_state.json.old.json
