@@ -115,6 +115,9 @@
  "sims": 20000,
  "ratings": {},
  "controls": {
+  "ourShare": 0.5,
+  "fatPct": 0.3,
+  "fatMin": 3.0,
   "deflPct": 0.5,
   "autoDefl": false,
   "deflCount": 3,
@@ -127,7 +130,7 @@
   "startWidth": 20.0,
   "narrowSecs": 600.0,
   "wideSince": 1793308840.8645103,
-  "quoting": false,
+  "quoting": true,
   "clickQty": 1,
   "market": "sports-betting-market-9278",
   "mapping": {
@@ -154,13 +157,12 @@
   },
   "paKeep": {},
   "edgeAdj": {
-   "Rogue": 1.5,
    "Echo": 1.5
   },
   "hidden": [],
   "layout": {},
   "deflPos": {
-   "Rogue": -5.0,
+   "Rogue": -4.0,
    "Echo": -4.0
   },
   "deflAmt": {}

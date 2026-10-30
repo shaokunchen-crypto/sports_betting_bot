@@ -75,8 +75,9 @@ input[type=number]{width:56px}
 .hd button{padding:0 6px;font-size:11px}
 .bd{flex:1;min-height:0;position:relative;display:flex;flex-direction:column}
 .ft{display:flex;align-items:center;gap:6px;padding:3px 6px;border-top:1px solid var(--line)}
-.ft input{width:52px;padding:1px 3px}
-.ft button{padding:0 6px;font-size:11px}
+.ft input{width:84px;padding:3px 6px;font-size:13px;font-weight:700}
+.ft input.mb{border-color:#2ea04388}.ft input.ma{border-color:#f8514988}
+.ft button{padding:2px 10px;font-size:12px}
 .fv{display:flex;gap:10px;padding:2px 6px;font-size:12px}
 .fv b{font-weight:700}
 /* book */
@@ -88,6 +89,21 @@ table.bk{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
 .bk td.px:hover{background:#26324a}
 .bk td.x{background:var(--cross)}
 .bk .me{color:var(--mine);font-size:10px}
+/* the ladder on the Markets tab */
+.bk.lad td{padding:2px 6px}
+.bk.lad td.who{text-align:left;color:var(--mut);font-size:11px;max-width:80px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bk.lad td.who.a{text-align:right}
+.bk.lad td.who.me{color:var(--mine);font-weight:700}
+.bk.lad th.r{text-align:right}
+.bk.lad td.q{width:28px}
+.bk.lad td.px{width:52px}
+.bk.lad td.px.b{color:var(--bid);text-align:right;border-right:1px solid var(--line)}
+.bk.lad td.px.a{color:var(--ask);text-align:left}
+.bk.lad td.px.none{cursor:default}
+.bk.lad td.px.none:first-child,.bk.lad tr.a td:nth-child(3){border-right:1px solid var(--line)}
+.bk.lad tr.a td:nth-child(n+4){background:#2a141433}.bk.lad tr.b td:nth-child(-n+3){background:#12261a33}
+.bk.lad tr.mid td{text-align:center;font-size:10px;padding:0;border-bottom:1px solid var(--line)}
+.bk.lad tr td.px.x{background:var(--cross)}
 .bk th{color:var(--mut);font-weight:500;font-size:10px;text-align:right;padding:0 6px}
 .bk th.l{text-align:left}
 .note{color:var(--mut);font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
@@ -195,6 +211,8 @@ canvas.ch{flex:1;min-height:0;width:100%;display:block;cursor:crosshair}
     <span class="spin"><button onclick="bump('deflPct',-0.1)">▼</button><span id="dpct">-</span><button onclick="bump('deflPct',0.1)">▲</button></span>
     × <span class="spin"><button onclick="bump('deflCount',-1,1)">▼</button><span id="dcnt">-</span><button onclick="bump('deflCount',1)">▲</button></span>
   </div>
+  <div class="grp" title="fair = (1 - w) × the market mid + w × our fair (where someone else quotes both sides; otherwise our fair)">
+    ours <span class="spin"><button onclick="bump('ourShare',-0.1,0,1)">▼</button><span id="oshare">-</span><button onclick="bump('ourShare',0.1,0,1)">▲</button></span></div>
   <div class="grp" title="Max position per market (each market can have its own in Position management)">max pos <span class="spin"><button onclick="bump('maxPos',-1)">▼</button><span id="mpos">-</span><button onclick="bump('maxPos',1)">▲</button></span></div>
   <div class="grp" title="Lots per click-trade">qty <span class="spin"><button onclick="bump('clickQty',-1,1)">▼</button><span id="qty">1</span><button onclick="bump('clickQty',1,1)">▲</button></span></div>
   <span>P&amp;L <b id="pnl" class="num">-</b></span>
@@ -228,7 +246,7 @@ async function post(url, body) {
 }
 async function setCtl(set) { const j = await post("/api/controls", {set}); if (j.ok && S) S.controls = j.controls; refresh(); return j; }
 function loadMarket() { let v = $("market").value.trim(); const m = v.match(/\/m\/([^/?#]+)/); if (m) v = m[1]; setCtl({market: v}); }
-function bump(k, d, min = 0) { if (!S) return; setCtl({[k]: Math.max(min, Math.round(((S.controls[k] || 0) + d) * 100) / 100)}); }
+function bump(k, d, min = 0, max = Infinity) { if (!S) return; setCtl({[k]: Math.min(max, Math.max(min, Math.round(((S.controls[k] || 0) + d) * 100) / 100))}); }
 function toggleAll() { if (!S) return; const on = !S.controls.quoting; post("/api/allquotes", {on}).then(j => j.ok && toast(on ? "Quotes on in every market" : "Quotes off: everything pulled")); }
 function setTab(t) { TAB = t; localStorage.setItem("tdTab", t); BUILT = ""; render(); }
 const row = team => S.rows.find(r => r.team === team);
@@ -267,23 +285,29 @@ function legendHTML() {
                  ["3-x through", {status: "adv"}], ["x-3 out", {status: "out"}]];
   return `<span class="mut">record:</span>` + items.map(([lab, x]) => `<span class="sw" style="border-color:${recColor({status: "swiss", ...x})}">${lab}</span>`).join("");
 }
-// one outline around all the teams in each pot (drawn over the grid, until the first result is in)
+// one outline around each group of squares: the pots until the first result is in; in the knockout,
+// the two teams of each match (drawn over the grid)
+const KO_GROUP = {QF1: ["QF1 · 3-1 v 3-1", "#58a6ff"], QF2: ["QF2 · 3-2 v 3-0", "#3fb950"], QF3: ["QF3 · 3-1 v 3-2", "#d29922"],
+                  QF4: ["QF4 · 3-0 v 3-2", "#db61a2"], SF1: ["Semi-final 1", "#58a6ff"], SF2: ["Semi-final 2", "#d29922"], F: ["Grand Final", "#e3b341"]};
 function drawPots() {
   const g = $("grid");
   g.querySelectorAll(".potline,.potlbl").forEach(x => x.remove());
-  if (Object.keys(S.state.results || {}).length) return;
+  const ko = !!koPlacement(), groups = ko ? KO_GROUP : POT;
+  if (!ko && Object.keys(S.state.results || {}).length) return;
   const gr = g.getBoundingClientRect(), half = 3, slots = {};
   for (const el of g.querySelectorAll(".cell")) {
     const r = row(el.dataset.team); if (!r) continue;
+    const key = ko ? el.dataset.m : String(r.tier);
+    if (!key || !groups[key]) continue;
     const k = el.dataset.slot, b = el.getBoundingClientRect(), s = slots[k];
     const box = {l: b.left - gr.left - half, t: b.top - gr.top - half, r: b.right - gr.left + half, b: b.bottom - gr.top + half};
-    slots[k] = s ? {...s, l: Math.min(s.l, box.l), r: Math.max(s.r, box.r)} : {...box, pot: String(r.tier), c: +el.dataset.c, rw: +el.dataset.r};
+    slots[k] = s ? {...s, l: Math.min(s.l, box.l), r: Math.max(s.r, box.r)} : {...box, pot: key, c: +el.dataset.c, rw: +el.dataset.r};
   }
   const at = (c, rw) => slots[`${c},${rw}`];
   let h = "";
   const firsts = {};
   for (const s of Object.values(slots)) {
-    const col = (POT[s.pot] || ["", "#888"])[1], line = (x, y, w, ht) => `<div class="potline" style="left:${x}px;top:${y}px;width:${w}px;height:${ht}px;background:${col}"></div>`;
+    const col = (groups[s.pot] || ["", "#888"])[1], line = (x, y, w, ht) => `<div class="potline" style="left:${x}px;top:${y}px;width:${w}px;height:${ht}px;background:${col}"></div>`;
     if ((at(s.c, s.rw - 1) || {}).pot !== s.pot) h += line(s.l, s.t - 1, s.r - s.l, 2);
     if ((at(s.c, s.rw + 1) || {}).pot !== s.pot) h += line(s.l, s.b - 1, s.r - s.l, 2);
     if ((at(s.c - 1, s.rw) || {}).pot !== s.pot) h += line(s.l - 1, s.t, 2, s.b - s.t);
@@ -291,7 +315,7 @@ function drawPots() {
     const f = firsts[s.pot];
     if (!f || s.rw < f.rw || (s.rw === f.rw && s.c < f.c)) firsts[s.pot] = s;
   }
-  for (const [p, s] of Object.entries(firsts)) h += `<div class="potlbl" style="left:${s.l + 8}px;top:${s.t}px;background:${POT[p][1]}">${POT[p][0]}</div>`;
+  for (const [p, s] of Object.entries(firsts)) h += `<div class="potlbl" style="left:${s.l + 8}px;top:${s.t}px;background:${groups[p][1]}">${groups[p][0]}</div>`;
   g.insertAdjacentHTML("beforeend", h);
 }
 function hideTeam(team, hidden) { BUILT = ""; post("/api/hide", {team, hidden}).then(refresh); }
@@ -355,7 +379,29 @@ const cellOf = team => document.querySelector(`.cell[data-team="${CSS.escape(tea
 // where each visible team goes: 4 across, as few rows as hold the teams still on screen (so every
 // time a whole row's worth is minimised the rest get bigger). The two qualifiers share one square
 // while both are still in; the loser is minimised as soon as their result is in.
+// knockout: the teams still in, laid out as the bracket. Quarter-finals: 4 quadrants, each match's two
+// teams side by side (QF1, QF2 on top - they meet in SF1; QF3, QF4 below). Semis: SF1's pair on top,
+// SF2's below. Final: one finalist on top, one below. Everyone else is in the bottom bar.
+function koPlacement() {
+  const fx = S.fixtures;
+  if (!fx || !fx.swissDone) return null;
+  const K = Object.fromEntries(fx.ko.map(k => [k.id, k]));
+  const pair = id => K[id] && K[id].a && K[id].b ? [{t: K[id].a, m: id}, {t: K[id].b, m: id}] : null;
+  let rows;
+  if (pair("F")) rows = [[pair("F")[0]], [pair("F")[1]]];
+  else if (pair("SF1") && pair("SF2")) rows = [pair("SF1"), pair("SF2")];
+  else if (["QF1", "QF2", "QF3", "QF4"].every(pair)) rows = [[...pair("QF1"), ...pair("QF2")], [...pair("QF3"), ...pair("QF4")]];
+  else {                                                        // drawn but not entered yet: the 8 by record
+    const adv = ["3-0", "3-1", "3-2"].flatMap(k => (fx.pools[k] || []).map(t => ({t, m: ""})));
+    rows = [adv.slice(0, 4), adv.slice(4, 8)];
+  }
+  const cols = Math.max(...rows.map(r => r.length));
+  return {ko: true, cols, rows: rows.length,
+          cells: rows.flatMap((r, ri) => r.map((x, ci) => ({t: x.t, m: x.m, col: `${ci * 2 + 1} / span 2`, row: ri + 1, c: ci})))};
+}
 function placement() {
+  const ko = koPlacement();
+  if (ko) return ko;
   const hid = new Set(S.controls.hidden || []), tier = S.state.tiers || {};
   const vis = order().filter(t => !hid.has(t));
   const qs = vis.filter(t => tier[t] === "Q");
@@ -378,28 +424,29 @@ function build() {
   g.style.gridTemplateColumns = `repeat(${P.cols * 2}, minmax(0,1fr))`;
   g.style.gridTemplateRows = `repeat(${P.rows}, minmax(0,1fr))`;
   let h = "";
-  for (const {t, col, row: ri, half, c} of P.cells) {
+  for (const {t, col, row: ri, half, c, m} of P.cells) {
     const T = esc(t), J = esc(JSON.stringify(t)), pos = `grid-column:${col};grid-row:${ri}`;
     const dnd = `ondragover="event.preventDefault();this.classList.add('dragover')" ondragleave="this.classList.remove('dragover')" ondrop='onDrop(event,"team",${J})'`;
     const hd = `<div class="hd"><span class="nm" draggable="true" ondragstart='onDragStart(event,"team",${J})' title="drag onto another team to move it there">${T}</span><span class="rk"></span><span class="sp"></span>`;
     const tail = `<button class="rs" title="undo this team's fair, pos-adj and edge edits" onclick='resetTeam(${J})'>↺</button><button class="xb" title="settled: minimise to the bottom bar" onclick='hideTeam(${J},true)'>✕</button>`;
-    if (TAB === "mk") h += `<div class="cell${half ? " half" : ""}" data-team="${T}" data-slot="${c},${ri}" data-c="${c}" data-r="${ri}" style="${pos}" ${dnd}>
+    if (TAB === "mk") h += `<div class="cell${half ? " half" : ""}" data-team="${T}" data-slot="${c},${ri}" data-m="${m || ""}" data-c="${c}" data-r="${ri}" style="${pos}" ${dnd}>
       ${hd}<button class="cb" onclick='toggleChart(${J})'>chart</button><button class="qb" onclick='quoteBtn(${J})'>-</button>${tail}</div>
       <div class="mrow"><div class="bd"></div><div class="side">${KINDS.map(k => stepper(J, k)).join("")}</div></div>
       <div class="fv num"></div>
       <div class="ft"><span class="ps num"></span><span class="note"></span>
-        <input class="mb" placeholder="bid" title="manual bid (qty = click qty)"><input class="ma" placeholder="offer" title="manual offer"><button onclick='manual(${J})'>post</button></div></div>`;
-    else h += `<div class="cell${half ? " half" : ""}" data-team="${T}" data-slot="${c},${ri}" data-c="${c}" data-r="${ri}" style="${pos}" ${dnd}>
+        <input class="mb" placeholder="bid" onkeydown='if(event.key==="Enter")manual(${J})'><input class="ma" placeholder="offer" onkeydown='if(event.key==="Enter")manual(${J})'><button onclick='manual(${J})' title="or press Enter in either box">post</button></div></div>`;
+    else h += `<div class="cell${half ? " half" : ""}" data-team="${T}" data-slot="${c},${ri}" data-m="${m || ""}" data-c="${c}" data-r="${ri}" style="${pos}" ${dnd}>
       ${hd}<span class="rg mut num"></span>${tail}</div>
       <div class="pz">${KINDS_POS.map(k => stepper(J, k)).join("")}</div>
       <div class="kv"></div>
       <div class="ot note" style="padding:0 6px;font-size:11px"></div><div class="hg"></div><div class="tob"></div></div>`;
   }
   g.innerHTML = h;
-  const hid = (S.controls.hidden || []).filter(t => S.rows.some(r => r.team === t));
+  const placed = new Set(P.cells.map(x => x.t)), userHid = new Set(S.controls.hidden || []);
+  const hid = S.rows.map(r => r.team).filter(t => !placed.has(t));        // minimised, or out of the bracket
   $("tray").hidden = !hid.length;
-  $("tray").innerHTML = `<span class="mut">minimised:</span>` + hid.map(t => { const r = row(t), J = esc(JSON.stringify(t));
-    return `<span class="chip">${esc(t)} <span class="mut num">${r ? f2(r.theo) : ""}</span><button title="maximise: back on the screen" onclick='hideTeam(${J},false)'>⤢</button></span>`; }).join("");
+  $("tray").innerHTML = `<span class="mut">${P.ko ? "out of the bracket / minimised" : "minimised"}:</span>` + hid.map(t => { const r = row(t), J = esc(JSON.stringify(t));
+    return `<span class="chip">${esc(t)} <span class="mut num">${r ? f2(r.theo) : ""}</span>${userHid.has(t) && !P.ko ? `<button title="maximise: back on the screen" onclick='hideTeam(${J},false)'>⤢</button>` : ""}</span>`; }).join("");
   if (TAB === "mk") for (const t of Object.keys(CHART)) if (CHART[t]) mountChart(t);
 }
 
@@ -414,6 +461,7 @@ function render() {
   if (document.activeElement !== $("mmW")) $("mmW").value = c.rebateWidth;
   $("mmN").textContent = c.nTight; $("qty").textContent = c.clickQty; $("mpos").textContent = c.maxPos;
   $("dpct").textContent = Math.round(c.deflPct * 100) + "%"; $("dcnt").textContent = c.deflCount;
+  $("oshare").textContent = Math.round(c.ourShare * 100) + "%";
   $("adSw").checked = !!c.autoDefl;
   $("mmNow").innerHTML = S.cover ? `<span class="${S.cover.within >= S.cover.need ? "pos" : "neg"}">now ${S.cover.within}/${S.cover.need}</span>` : "";
   $("narrow").textContent = S.narrowLeft > 0 ? ` ⏱${Math.floor(S.narrowLeft / 60)}:${String(Math.floor(S.narrowLeft % 60)).padStart(2, "0")}` : "";
@@ -456,26 +504,36 @@ function renderMarket(el, r) {
   const cb = el.querySelector(".cb"); cb.textContent = CHART[r.team] ? "order book" : "chart";
   el.querySelector(".fv").innerHTML = r.known
     ? `<span>known value <b>${f2(r.theo)}</b></span><span class="mut">quoted ±0.10</span>`
-    : `<span title="(n x other market makers' mid + our fair) / (n + 1)"><span class="mut">fair</span> <b>${f2(r.theo)}</b>${r.nMM ? ` <span class="mut">(ours ${f2(r.our)} · ${r.nMM} MM${r.nMM > 1 ? "s" : ""} ${f2(r.mktMid)})</span>` : ""}</span>
+    : `<span title="(1 - w) × market mid + w × our fair, w = ours % in the top bar"><span class="mut">fair</span> <b>${f2(r.theo)}</b>${r.mktMid != null ? ` <span class="mut">(ours ${f2(r.our)} ${Math.round(S.controls.ourShare * 100)}% · mkt ${f2(r.mktMid)} ${100 - Math.round(S.controls.ourShare * 100)}%)</span>` : ""}</span>
        <span><span class="mut">pos-adj</span> <b>${f2(r.pa)}</b></span>${r.width != null ? `<span class="mut" title="copy: inside the other market makers' top of book, copying it; own: our own market">${r.mode} · ${f2(r.width)} wide${r.edgeEdited ? " (edge set)" : ""}</span>` : ""}`;
   el.querySelector(".ps").innerHTML = `pos <b class="${r.pos > 0 ? "pos" : r.pos < 0 ? "neg" : ""}">${sg(r.pos)}</b>` + (r.avg != null ? ` <span class="mut">@ ${f2(r.avg)}</span>` : "");
   el.querySelector(".note").textContent = r.iid ? (r.note || (r.tight ? "MM requirement market" : "")) : "map a contract in Add result → Setup";
   el.querySelector(".note").title = r.note || "";
+  for (const [cls, w] of [[".mb", "bid"], [".ma", "offer"]]) {             // the fat-finger range on the typing boxes
+    const inp = el.querySelector(cls);
+    inp.placeholder = r.iid ? `${r.fatLo.toFixed(1)}–${r.fatHi.toFixed(1)}` : w;
+    inp.title = `manual ${w} (qty = top-bar qty). Fat-finger guard: must be within ${f2(r.fatLo)} – ${f2(r.fatHi)} (fair ± ${Math.round(S.controls.fatPct * 100)}% or ${S.controls.fatMin} points)`;
+  }
   if (CHART[r.team]) { drawChart(r.team); return; }
   const bd = el.querySelector(".bd");
   if (!r.iid) { bd.innerHTML = `<div class="mut" style="margin:auto">no contract mapped</div>`; return; }
-  const n = Math.max(1, Math.min(5, Math.floor((bd.clientHeight - 16) / 19)));
+  // order book ladder: bids on the left, offers on the right; offers on the upper rows (best nearest the
+  // middle), bids on the lower rows - bid prices bottom-left, offer prices top-right; who is behind each level
   const J = esc(JSON.stringify(r.team));
-  let h = `<table class="bk"><tr><th>qty</th><th>bid</th><th class="l">offer</th><th class="l">qty</th></tr>`;
-  for (let i = 0; i < n; i++) {
-    const b = r.bids[i], a = r.asks[i];
-    const bx = b && !r.known && b[0] > r.pa + 1e-9 && b[1] > b[2] ? " x" : "", ax = a && !r.known && a[0] < r.pa - 1e-9 && a[1] > a[2] ? " x" : "";
-    h += `<tr><td>${b ? b[1] + (b[2] ? ` <span class="me">(${b[2]} ours)</span>` : "") : ""}</td>`
-      + (b ? `<td class="px b${bx}" title="click: SELL into this bid" onclick='trade(${J},"ask",${b[0]})'>${f2(b[0])}</td>` : `<td></td>`)
-      + (a ? `<td class="px a${ax}" title="click: BUY this offer" onclick='trade(${J},"bid",${a[0]})'>${f2(a[0])}</td>` : `<td></td>`)
-      + `<td class="qa">${a ? a[1] + (a[2] ? ` <span class="me">(${a[2]} ours)</span>` : "") : ""}</td></tr>`;
-  }
-  bd.innerHTML = h + "</table>";
+  const half = (l, side) => {                                  // who | qty | price  (offers: price | qty | who)
+    if (!l) return side === "b" ? `<td class="who"></td><td class="q"></td><td class="px none"></td>` : `<td class="px none"></td><td class="q"></td><td class="who"></td>`;
+    const [px, qty, mine, who] = l;
+    const cross = !r.known && qty > mine && (side === "a" ? px < r.pa - 1e-9 : px > r.pa + 1e-9) ? " x" : "";
+    const w = `<td class="who ${side} ${mine ? "me" : ""}" title="${esc(who || "")}">${esc(who || "")}</td>`, q = `<td class="q">${qty}</td>`;
+    const p = `<td class="px ${side}${cross}" title="click: ${side === "a" ? "BUY this offer" : "SELL into this bid"}" onclick='trade(${J},"${side === "a" ? "bid" : "ask"}",${px})'>${f2(px)}</td>`;
+    return side === "b" ? w + q + p : p + q + w;
+  };
+  const blank = `<td class="who"></td><td class="q"></td><td class="px none"></td>`, blankR = `<td class="px none"></td><td class="q"></td><td class="who"></td>`;
+  const spread = r.bids[0] && r.asks[0] ? f2(r.asks[0][0] - r.bids[0][0]) : "–";
+  bd.innerHTML = `<table class="bk lad"><tr><th class="l">who</th><th>qty</th><th>bid</th><th class="l">offer</th><th class="l">qty</th><th class="r">who</th></tr>`
+    + `<tr class="a">${blank}${half(r.asks[1], "a")}</tr><tr class="a">${blank}${half(r.asks[0], "a")}</tr>`
+    + `<tr class="mid"><td colspan="6" class="mut">spread ${spread}</td></tr>`
+    + `<tr class="b">${half(r.bids[0], "b")}${blankR}</tr><tr class="b">${half(r.bids[1], "b")}${blankR}</tr></table>`;
 }
 
 function renderPos(el, r) {
@@ -752,7 +810,9 @@ function koPick(btn, id, side) {
   saveResult(id, {a, b, winner: side === "a" ? a : b});
 }
 // settings: everything that isn't needed minute to minute
-const SETS = [["startWidth", "width right after a result", 1], ["narrowSecs", "seconds to narrow to the MM spread", 30],
+const SETS = [["fatPct", "fat-finger guard: typed bids / offers within this share of fair (0.3 = 30%) …", 0.05],
+  ["fatMin", "… or this many points of it, whichever is wider", 0.5],
+  ["startWidth", "width right after a result", 1], ["narrowSecs", "seconds to narrow to the MM spread", 30],
   ["k","non-MM markets narrow to 2 × (k × σ(next result)", 0.1], ["c", "… + c)", 0.1],
   ["hardExtra", "hard limit = max + this (free-money takes)", 1], ["budget", "max budget (worst-case loss)", 100],
   ["takeEdge", "take a price this far through our PA", 0.1], ["takeMax", "take: max lots", 1]];

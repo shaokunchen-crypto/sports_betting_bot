@@ -66,6 +66,24 @@ def test_plan():
     _, _, _, _, t3 = setup16({2: inst("i2", teams[2], bids=[7]), 3: inst("i3", teams[3], asks=[70])})
     p, r = plan(80.0, t3, feas=feas2)
     assert r[2]["take"] == ("ask", 7.0, 1) and r[3]["take"] == ("bid", 70.0, 1), (r[2], r[3])
+    # pair check: teams 0 and 1 are the two finalists (always 160 between them). Team 1 is offered at 90
+    # and bid 85, so our offer on team 0 must be >= 70 and our bid <= 75, whatever our fair says
+    N = len(teams)
+    pmin, pmax = np.zeros((N, N)), np.full((N, N), 200.0)
+    pmin[0, 1] = pmin[1, 0] = pmax[0, 1] = pmax[1, 0] = 160.0
+    _, _, _, _, tf = setup16({1: inst("i1", teams[1], bids=[85], asks=[90])})
+    p, r = ts.plan_quotes(st, feas, np.full(N, 72.0), np.full(N, 2.0), tf, by_team, {}, CTL, None, NOW, (pmin, pmax))
+    assert p["i0"] == [("bid", 70.0, 1), ("ask", 74.0, 1)], p["i0"]                 # 70 / 74 is fine as it is
+    p, r = ts.plan_quotes(st, feas, np.full(N, 64.0), np.full(N, 2.0), tf, by_team, {}, CTL, None, NOW, (pmin, pmax))
+    assert dict((s, px) for s, px, _ in p["i0"])["ask"] >= 70.0 and "pair check" in r[0]["note"], (p["i0"], r[0]["note"])
+    p, r = ts.plan_quotes(st, feas, np.full(N, 80.0), np.full(N, 2.0), tf, by_team, {}, CTL, None, NOW, (pmin, pmax))
+    assert dict((s, px) for s, px, _ in p["i0"])["bid"] <= 75.0, p["i0"]
+    # fat-finger band: 30% of fair or 3 points, whichever is wider
+    fc = {**CTL, "fatPct": 0.3, "fatMin": 3.0}
+    assert ts.fat_finger_band(30.0, fc) == 9.0 and ts.fat_finger_band(2.5, fc) == 3.0 and ts.fat_finger_band(0.0, fc) == 3.0
+    # partly known (3 wins: 20 - 100), wide right after a result: the bid never goes below 20
+    p, _ = plan(24.0, empty, {**CTL, "wideSince": NOW}, feas={**feas, teams[0]: [20, 100]})
+    assert p["i0"][0] == ("bid", 20.0, 1) and p["i0"][1][1] == 34.0, p["i0"]
     assert ts.known_quotes(5, 0.01) == (4.9, 5.1) and ts.known_quotes(0, 0.01) == (0.0, 0.2)
     assert ts.known_quotes(100, 0.01) == (99.8, 100.0) and ts.known_quotes(5, 1) == (4.0, 6.0)
     # traded on our bid: no bid until re-enabled, offer still there
@@ -154,11 +172,14 @@ def test_fairs_and_hedges():
     assert abs(theo2[0] - base[0] - 2) < 1e-6 and abs(theo2[1] - base[1] + 2) < 1e-6
     F3 = ts.fairs(st, M, {**ctl, "paAdj": {"T0": 1.0}})
     assert np.allclose(F3["theo"], base) and abs(F3["pa"][0] - base[0] - 1) < 1e-6 and abs(F3["pa"][1] - base[1] + 1) < 1e-6
-    # 2 other market makers at mid 90 on finalist 0: fair = (2 x 90 + 1 x ours) / 3; known teams ignore the market
+    # market mid 90 on finalist 0, default 50/50: fair = (90 + ours) / 2; known teams ignore the market
     mid, n = np.full(16, np.nan), np.zeros(16)
     mid[0], n[0], mid[5], n[5] = 90.0, 2, 30.0, 1
     F4 = ts.fairs(st, M, ctl, (mid, n))
-    assert abs(F4["theo"][0] - (180 + base[0]) / 3) < 1e-9 and F4["our"][0] == base[0] and F4["theo"][5] == base[5]
+    assert abs(F4["theo"][0] - (90 + base[0]) / 2) < 1e-9 and F4["our"][0] == base[0] and F4["theo"][5] == base[5]
+    # our share w: fair = (1 - w) x market mid + w x ours; 0 -> the market mid, 1 -> ours
+    for w in (0.0, 0.3, 1.0):
+        assert abs(ts.fairs(st, M, {**ctl, "ourShare": w}, (mid, n))["theo"][0] - ((1 - w) * 90 + w * base[0])) < 1e-9
     # the PA offset kept through a result is added on top
     F5 = ts.fairs(st, M, {**ctl, "paKeep": {"T0": -1.5}})
     assert abs(F5["pa"][0] - F5["theo"][0] + 1.5) < 1e-9
@@ -348,6 +369,25 @@ def test_auto_deflection_count():
     assert ts.DeskGateway(False).cancel_level("m", "i0", "ask", 33.0)["ok"] is False   # paper: refused
 
 
+def test_order_owners():
+    """Who is behind each price level, from the event feed: placed, partly filled, cancelled, ours = "us"."""
+    h = ts.History()
+    evs = [{"seq": 1, "type": "ORDER_PLACED", "orderId": "o1", "instrumentId": "i0", "owner": "igor", "side": "bid", "price": to_px(30), "qty": 2},
+           {"seq": 2, "type": "ORDER_PLACED", "orderId": "o2", "instrumentId": "i0", "owner": "samz", "side": "bid", "price": to_px(30), "qty": 1},
+           {"seq": 3, "type": "ORDER_PLACED", "orderId": "o3", "instrumentId": "i0", "owner": "me", "side": "ask", "price": to_px(33), "qty": 1},
+           {"seq": 4, "type": "TRADE", "instrumentId": "i0", "price": to_px(30), "qty": 1, "buyer": "igor", "seller": "x",
+            "aggressorSide": "ask", "restingOrderId": "o1", "aggressingOrderId": "o9"},
+           {"seq": 5, "type": "ORDER_CANCELLED", "orderId": "o2"}]
+    saved = ts.ps.events
+    ts.ps.events = lambda mid, seq: [e for e in evs if e["seq"] > seq]
+    try:
+        h.update("m", {"seq": 5, "you": "me"}, {})
+    finally:
+        ts.ps.events = saved
+    own = h.owners("i0")
+    assert dict(own[("bid", 30.0)]) == {"igor": 1} and dict(own[("ask", 33.0)]) == {"us": 1}, dict(own)
+
+
 def test_end_to_end():
     st = tpricer.default_state()
     st["sims"] = 20000
@@ -379,6 +419,10 @@ def test_end_to_end():
     close = next((h for h in hs if h["team"] == teams[0]), None)
     assert close is None or (close["side"] == "ask" and close["lockPnl"] == 1 - 30), hs
     assert s1["api"]["read"] and not s1["api"]["orders"] and r0["maxPos"] == 10 and r0["tier"] == 1
+    # fat-finger guard on typed prices: inside fair +/- max(30%, 3) is fine, outside is refused
+    assert ts.fat_finger("i0", r0["fatLo"] + 0.01, r0["fatHi"] - 0.01) is None
+    assert "fat-finger" in ts.fat_finger("i0", None, r0["fatHi"] + 1) and "fat-finger" in ts.fat_finger("i0", 0.5 * r0["fatLo"], None)
+    assert abs(r0["fatHi"] - r0["theo"] - max(0.3 * r0["theo"], 3.0)) < 1e-9
     # seed nudged 4 -> 3.6: stronger, re-priced
     st0 = tpricer.load_state()
     tpricer.save_state({**st0, "ratings": {teams[3]: 2.4}})             # Pulse: shared #1 seed 3.0 -> 2.4, a buff
@@ -439,6 +483,7 @@ if __name__ == "__main__":
     test_requote()
     test_reconcile_reaches_every_market()
     test_auto_deflection_count()
+    test_order_owners()
     s = test_end_to_end()
     print(f"test_tdesk.py: all tests passed ({time.time() - t0:.1f} s); PA - theo, long 4 Team1:",
           " ".join(f"{r['team']} {r['pa'] - r['theo']:+.2f}" for r in s["rows"][:8]))

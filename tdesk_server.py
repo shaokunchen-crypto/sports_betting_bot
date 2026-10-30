@@ -8,7 +8,7 @@ Fair values, per team (numbers from tpricer.py and the controls on the page):
     our   = model theo + the trader's edits. An edit pins that team; every other team moves by it
             covariance with the pinned ones (most correlated move most), so totals that are fixed
             (all 16 = 310, the two finalists = 175 ...) never move. Edits are dropped on each result.
-    theo  = (n x other market makers' mid + 1 x our) / (n + 1), n = market makers quoting both sides.
+    theo  = (1 - w) x the other market makers' mid + w x our, w = OUR SHARE (our fair alone where nobody quotes), n = market makers quoting both sides.
     PA    = theo - gamma x (Sigma q) + the trader's PA edits (propagated the same way) + the PA - theo
             gap kept through the last result. Sigma q: our position times the payout covariance, so
             being long England lowers England AND raises whoever England's payout trades off against.
@@ -69,7 +69,7 @@ ALLOWED_HOSTS = {f"localhost:{PORT}", f"127.0.0.1:{PORT}"}
 SHARE = "--share" in sys.argv            # other laptops on the network may use this desk (with the link)
 PLAN_MAX_AGE = 5.0                       # the gateway pulls everything if the plan is older than this
 QUOTE_SIZE = 1                           # one bid and one offer of 1 lot per market
-CONTROLS_DEFAULT = {"deflPct": 0.5, "autoDefl": True, "deflCount": 3, "maxPosAdj": {}, "k": 1.0, "c": 1.0, "maxPos": 10,"startWidth": 20.0, "narrowSecs": 600.0,
+CONTROLS_DEFAULT = {"ourShare": 0.5, "fatPct": 0.3, "fatMin": 3.0,"deflPct": 0.5, "autoDefl": True, "deflCount": 3, "maxPosAdj": {}, "k": 1.0, "c": 1.0, "maxPos": 10,"startWidth": 20.0, "narrowSecs": 600.0,
                     "wideSince": 0.0, "quoting": False, "clickQty": 1, "market": "", "mapping": {}, "mappingOk": False,
                     "budget": 2000.0, "off": [], "rebateWidth": 2.9, "nTight": 14,
                     "requoteMin": 0.0, "newsPause": 5.0, "hardExtra": 5,
@@ -122,9 +122,7 @@ def _save_controls(changes):
     if "market" in changes and changes["market"] != st.get("controls", {}).get("market"):
         c["mappingOk"], c["quoting"] = False, False
     st["controls"] = c
-    with open(tpricer.STATE_FILE + ".tmp", "w", encoding="utf-8") as f:
-        json.dump(st, f, indent=1)
-    os.replace(tpricer.STATE_FILE + ".tmp", tpricer.STATE_FILE)
+    tpricer._write(st)
     return c
 
 
@@ -149,6 +147,8 @@ def model():
             MODEL.update(key=key, sim=sim, post=post, readouts=tpricer.readouts(st, sim),
                          feasible=tpricer.feasible(st), lockSum=lock_sum, lockDiff=lock_diff,
                          sumVal=pay[0][:, None] + pay[0][None, :], diffVal=pay[0][:, None] - pay[0][None, :],
+                         pairMin=np.array([(pay[:, [i]] + pay).min(axis=0) for i in range(n)]),    # what each pair of
+                         pairMax=np.array([(pay[:, [i]] + pay).max(axis=0) for i in range(n)]),    # teams can pay together
                          ms=round((time.time() - t0) * 1000))
         return st, dict(MODEL)
 
@@ -202,7 +202,7 @@ def update_defl_book(st, ctl, q, width):
 def fairs(st, M, ctl, mkt=None):
     """Per team (see the top of the file):
     base  model theo;  our = base + our theo edits (propagated by covariance)
-    theo  = (n x other market makers' mid + 1 x our) / (n + 1)
+    theo  = (1 - w) x the other market makers' mid + w x our, w = OUR SHARE (our fair alone where nobody quotes)
     pa0   = theo + deflection + the PA offset kept through the last result;  pa = pa0 + PA edits.
     deflection: team j's own PA moves by D[j] against our position (D: update_defl_book - make 9 at
     11, get lifted, 50% -> PA 10.5), and every other team by its covariance with j:
@@ -220,8 +220,9 @@ def fairs(st, M, ctl, mkt=None):
     base = clip(sim["theo"])
     our = clip(base + tpricer.propagate(cov, {idx[t]: d for t, d in ctl["theoAdj"].items() if t in idx}))
     mid, n = mkt if mkt is not None else (np.full(len(base), np.nan), np.zeros(len(base)))
+    w = min(max(float(ctl["ourShare"]), 0.0), 1.0)                # weight on our fair; the rest on the market mid
     has = ~np.isnan(mid) & ~known
-    theo = np.where(has, (n * np.clip(np.nan_to_num(mid), lo, hi) + our) / (n + 1), our)
+    theo = np.where(has, (1 - w) * np.clip(np.nan_to_num(mid), lo, hi) + w * our, our)
     var = np.diag(cov)
     D = np.array([ctl["deflAmt"].get(t, 0.0) for t in st["teams"]])
     defl = -(cov @ np.where(var > 1e-9, D / np.where(var > 1e-9, var, 1.0), 0.0))
@@ -346,7 +347,30 @@ def max_pos(ctl, team):
     return int(ctl["maxPosAdj"].get(team, ctl["maxPos"]))
 
 
-def plan_quotes(st, feas, fair, half, tops, by_team, positions, ctl, blocked=None, now=None):
+def pair_limits(k, st, by_team, tops, pairs, iid):
+    """(highest bid, lowest offer) we can show on team k so nobody can lock in a profit against us by
+    trading it together with one other team at that team's best price (ours included): our bid +
+    their best bid <= the most the two can pay out together, our offer + their best offer >= the least.
+    pairs = (pairMin, pairMax) from the simulation. Also returns which team binds, for the notes."""
+    cap, floor, why = 1e9, -1e9, []
+    if pairs is None:
+        return cap, floor, why
+    pmin, pmax = pairs
+    for j, t in enumerate(st["teams"]):
+        jid = by_team.get(t)
+        if j == k or not jid or jid == iid or tops[jid].get("closed"):
+            continue
+        b, a = tops[jid].get("bid"), tops[jid].get("ask")
+        if b is not None and pmax[k, j] - b < cap:
+            cap = pmax[k, j] - b
+            why.append(f"bid capped by {t}")
+        if a is not None and pmin[k, j] - a > floor:
+            floor = pmin[k, j] - a
+            why.append(f"offer floored by {t}")
+    return cap, floor, why
+
+
+def plan_quotes(st, feas, fair, half, tops, by_team, positions, ctl, blocked=None, now=None, pairs=None):
     """Every order we want resting: {contract id: [(side, price, qty)]} - one 1-lot bid and offer each -
     plus a row per team (and row["take"]: a price someone else shows that we trade on now).
 
@@ -403,13 +427,20 @@ def plan_quotes(st, feas, fair, half, tops, by_team, positions, ctl, blocked=Non
                 cap_bid = pricing.round_down(tpricer.TOTAL - sum(o_bid[x] for x in others), tick)
             if len(others) == len(st["teams"]) - 1 and all(x in o_ask for x in others):
                 cap_ask = pricing.round_up(tpricer.TOTAL - sum(o_ask[x] for x in others), tick)
+            pcap, pfloor, pwhy = pair_limits(k, st, by_team, tops, pairs, iid)
+            if bid > pcap + 1e-9 or ask < pfloor - 1e-9:
+                notes.append("pair check: " + ", ".join(w for w in pwhy if (w.startswith("bid") and bid > pcap) or (w.startswith("offer") and ask < pfloor))[:80])
+            cap_bid = min(cap_bid, pricing.round_down(pcap, tick))
+            cap_ask = max(cap_ask, pricing.round_up(pfloor, tick))
             bid, ask = min(bid, cap_bid), max(ask, cap_ask)      # (an offer pushed above the max payout is dropped below)
             if mode == "own" and ctl["take"]:                    # their price beats our PA by enough: trade it
                 if ob is not None and ob >= f + ctl["takeEdge"] - 1e-9:
                     take = ("ask", ob, min(tb["oBidQty"], ctl["takeMax"], mp + pos))
                 elif oa is not None and oa <= f - ctl["takeEdge"] + 1e-9:
                     take = ("bid", oa, min(tb["oAskQty"], ctl["takeMax"], mp - pos))
-            bid, ask = min(bid, hi - tick), max(min(ask, hi), lo + tick)
+            # inside what the team can still pay: never bid below its lowest payout or offer above its
+            # highest (both are risk-free - and keep us tight for the rebate once results narrow the range)
+            bid, ask = max(min(bid, hi - tick), lo), max(min(ask, hi), lo + tick)
         if ctl["take"]:                                          # free money: outside what it can still pay
             hard = mp + ctl["hardExtra"]
             if ob is not None and ob > hi + 1e-9:
@@ -424,7 +455,7 @@ def plan_quotes(st, feas, fair, half, tops, by_team, positions, ctl, blocked=Non
             ask = max(ask, round(ob + tick, 9))
         orders = []
         if bid > cap_bid + 1e-9 or ask < cap_ask - 1e-9:
-            notes.append("310 check: our price + everyone else's would lock in a profit against us")
+            notes.append("lock-in check: our price + others' would lock in a profit against us")
         if bid < 0 or bid > cap_bid + 1e-9:
             pass
         elif pos + QUOTE_SIZE <= mp and (left > 0 or pos < 0):
@@ -546,6 +577,16 @@ class History:
         self.mid, self.seq = mid, 0
         self.tob, self.trades, self.pa = defaultdict(list), defaultdict(list), defaultdict(list)
         self.parts = defaultdict(lambda: defaultdict(int))   # contract id -> {other participant: position}
+        self.orders = {}          # order id -> [contract id, side, price, qty left, owner ("us" = ours)]
+
+    def owners(self, iid):
+        """{(side, price): {owner: qty}} for every order resting on this contract, from the event feed."""
+        out = defaultdict(lambda: defaultdict(int))
+        with self.lock:
+            for i, side, px, q, who in self.orders.values():
+                if i == iid:
+                    out[(side, round(px, 6))][who] += q
+        return out
 
     def others(self, iid):
         with self.lock:
@@ -577,8 +618,20 @@ class History:
                         for who, sgn in ((e.get("buyer"), 1), (e.get("seller"), -1)):
                             if who and who != me:
                                 self.parts[e["instrumentId"]][who] += sgn * e["qty"]
+                        for oid in (e.get("restingOrderId"), e.get("aggressingOrderId")):
+                            o = self.orders.get(oid)
+                            if o:
+                                o[3] -= e["qty"]
+                                if o[3] <= 0:
+                                    del self.orders[oid]
+                    elif e.get("type") == "ORDER_PLACED":
+                        self.orders[e["orderId"]] = [e["instrumentId"], e["side"], from_px(e["price"]), e["qty"],
+                                                     "us" if e.get("owner") == me else e.get("owner") or "?"]
+                    elif e.get("type") == "ORDER_CANCELLED":
+                        self.orders.pop(e.get("orderId"), None)
                     elif e.get("type") == "RESET":
                         self.parts = defaultdict(lambda: defaultdict(int))
+                        self.orders = {}
             now = time.time() * 1000
             for iid, v in pa_by_iid.items():
                 lst = self.pa[iid]
@@ -893,6 +946,28 @@ def setup(body):
     model()
 
 
+def fat_finger_band(fair, ctl):
+    """How far from fair a typed price may be: FAT PCT of fair or FAT MIN points, whichever is bigger."""
+    return max(ctl["fatPct"] * abs(fair), ctl["fatMin"])
+
+
+def fat_finger(iid, bid, ask):
+    """None if a typed bid / offer is near enough to that team's fair, else the reason it's refused."""
+    team = next((t for t, i in (STATUS.get("byTeam") or {}).items() if i == iid), None)
+    if team is None:
+        return "unknown contract"
+    st, M = model()
+    ctl = controls()
+    F = fairs(st, M, ctl, STATUS.get("mkt"))
+    f = float(F["theo"][st["teams"].index(team)])
+    band = fat_finger_band(f, ctl)
+    for side, px in (("bid", bid), ("offer", ask)):
+        if px is not None and abs(px - f) > band + 1e-9:
+            return (f"fat-finger guard: {side} {px:g} is {abs(px - f):.2f} from {team}'s fair {f:.2f} "
+                    f"(allowed {max(f - band, 0):.2f} - {min(f + band, 100):.2f})")
+    return None
+
+
 def current_book(ctl):
     """(our positions, other market makers' mids) from the last tick, or flat / none without a market."""
     if ctl["market"] and STATUS.get("q") is not None:
@@ -948,7 +1023,8 @@ def tick():
         x = int(lim.get("defaultLimit", ctl["maxPos"]))
         ctl = {**ctl, "maxPos": min(ctl["maxPos"], x), "maxPosAdj": {t: min(v, x) for t, v in ctl["maxPosAdj"].items()}}
     blocked = {iid: set(s) for iid, s in gateway.blocked.get(mid, {}).items()} if gateway else {}
-    plan, rows = plan_quotes(st, M["feasible"], pa, model_half, tops, by_team, positions, ctl, blocked)
+    plan, rows = plan_quotes(st, M["feasible"], pa, model_half, tops, by_team, positions, ctl, blocked,
+                             pairs=(M["pairMin"], M["pairMax"]))
     ok = not check_mapping(ctl["mapping"], st["teams"], list(names.values()))   # Quoting ON is the confirmation
     if gateway.enabled:
         takes = {r["iid"]: r["take"] for r in rows if r.get("take") and ok}
@@ -986,12 +1062,30 @@ def instruments(view):
         trades[t["instrumentId"]].append((t["signedQty"], from_px(t["price"])))
     for inst in view["instruments"]:
         iid = inst["id"]
+        known = HISTORY.owners(iid)
 
-        def side(levels):
-            return [[from_px(l["price"]), l["qty"], sum(o["qty"] for o in l["orders"] if o.get("mine"))] for l in levels[:5]]
+        def side(levels, s):
+            """[price, qty, our qty, "who×qty, who×qty"] per level: the owners from the snapshot if it names
+            them, else from the event feed; whatever's left unnamed shows as "?"."""
+            out = []
+            for l in levels[:5]:
+                px = from_px(l["price"])
+                who = defaultdict(int)
+                for o in l["orders"]:
+                    if o.get("owner"):
+                        who["us" if o.get("mine") else o["owner"]] += o["qty"]
+                if not who:
+                    who.update(known.get((s, round(px, 6)), {}))
+                mine = sum(o["qty"] for o in l["orders"] if o.get("mine"))
+                if mine and "us" not in who:
+                    who["us"] = mine
+                if sum(who.values()) < l["qty"]:
+                    who["?"] += l["qty"] - sum(who.values())
+                out.append([px, l["qty"], mine, " · ".join(f"{w}×{q}" if q > 1 else w for w, q in who.items())])
+            return out
         last_hit = max((t["at"] for t in view.get("myTrades", []) if t["instrumentId"] == iid and not t.get("aggressor")), default=None)
         _, avg = avg_cost(trades[iid])
-        out[iid] = {"name": inst["name"], "bids": side(inst["bids"]), "asks": side(inst["asks"]), "pos": inst["position"],
+        out[iid] = {"name": inst["name"], "bids": side(inst["bids"], "bid"), "asks": side(inst["asks"], "ask"), "pos": inst["position"],
                     "avg": avg, "cash": -sum(q * p for q, p in trades[iid]), "settle": from_px(inst.get("settlementValue")),
                     "closed": bool(inst.get("closed")), "hitAt": last_hit, "last": from_px(inst.get("lastTrade"))}
     return out
@@ -1036,6 +1130,8 @@ def state_json():
                      "nMM": int(F["n"][k]), "mktMid": None if np.isnan(F["mid"][k]) else float(F["mid"][k]),
                      "mode": r.get("mode"), "width": r.get("width"), "others": HISTORY.others(iid) if iid else [],
                      "edge": None if r.get("width") is None else r["width"] / 2, "edgeEdited": t in ctl["edgeAdj"],
+                     "fatLo": max(float(theo[k]) - fat_finger_band(float(theo[k]), ctl), 0.0),
+                     "fatHi": min(float(theo[k]) + fat_finger_band(float(theo[k]), ctl), 100.0),
                      "seedVal": float(seeds[k]), "seedEdited": t in (st.get("ratings") or {}),
                      "hidden": t in ctl["hidden"],
                      "theoEdited": t in ctl["theoAdj"], "paEdited": t in ctl["paAdj"],
@@ -1053,7 +1149,7 @@ def state_json():
     if view:                                             # what's actually resting right now vs the MM requirement
         op = [r for r in rows if r["iid"] and not insts[r["iid"]]["closed"] and insts[r["iid"]]["settle"] is None]
         def mine(r, s):
-            return [p for p, _, m in r[s] if m]
+            return [lvl[0] for lvl in r[s] if lvl[2]]
         within = [r for r in op if mine(r, "bids") and mine(r, "asks")
                   and min(mine(r, "asks")) - max(mine(r, "bids")) <= ctl["rebateWidth"] + 1e-9]
         cover = {"open": len(op), "within": len(within), "need": min(ctl["nTight"], len(op)),
@@ -1200,6 +1296,9 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/quote":                       # manual resting bid and/or offer
                 num = lambda v: None if v in (None, "") else float(v)
                 qty = body.get("qty")
+                bad = fat_finger(body.get("iid"), num(body.get("bid")), num(body.get("ask")))
+                if bad:
+                    return self.send_json({"ok": False, "reason": bad})
                 return self.send_json(gateway.call(gateway.manual_quote, mid, body.get("iid"), num(body.get("bid")),
                                                    num(body.get("ask")), qty if isinstance(qty, int) else -1))
             if path == "/api/cancel_level":                # click on our own top-of-book price: cancel it

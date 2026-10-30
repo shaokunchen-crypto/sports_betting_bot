@@ -26,6 +26,7 @@ import itertools
 import json
 import math
 import os
+import time
 from statistics import NormalDist
 
 import numpy as np
@@ -103,7 +104,14 @@ def save_state(st):
 def _write(st):
     with open(STATE_FILE + ".tmp", "w", encoding="utf-8") as f:
         json.dump(st, f, indent=1)
-    os.replace(STATE_FILE + ".tmp", STATE_FILE)
+    for attempt in range(40):                  # Windows refuses the swap while another thread is reading the
+        try:                                   # file: wait a moment and try again (up to ~2 s)
+            os.replace(STATE_FILE + ".tmp", STATE_FILE)
+            return
+        except PermissionError:
+            if attempt == 39:
+                raise
+            time.sleep(0.05)
 
 
 # --- match model ----------------------------------------------------------------------------
