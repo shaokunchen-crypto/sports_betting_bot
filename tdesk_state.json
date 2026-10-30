@@ -130,15 +130,15 @@
   "startWidth": 20.0,
   "narrowSecs": 600.0,
   "wideSince": 1793308840.8645103,
-  "quoting": true,
+  "quoting": false,
   "clickQty": 1,
-  "market": "sports-betting-market-9278",
+  "market": "friday-sports-betting-market-6b22",
   "mapping": {
    "Australia": "Nova",
    "belgium": "Rogue",
    "Russia": "Echo"
   },
-  "mappingOk": true,
+  "mappingOk": false,
   "budget": 2000.0,
   "off": [],
   "rebateWidth": 3.0,
@@ -157,7 +157,8 @@
   },
   "paKeep": {},
   "edgeAdj": {
-   "Echo": 1.5
+   "Echo": 1.5,
+   "Rogue": 1.5
   },
   "hidden": [],
   "layout": {},

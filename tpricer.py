@@ -352,7 +352,7 @@ def simulate(st, n=None, seed=7, shift=None, post=None):
             if all(cands.values()):
                 pairs = np.zeros((n, int(active[0].sum()) // 2, 2), dtype=int)
                 for t, draws in cands.items():
-                    arr = np.array([[(idx[a], idx[b]) for a, b in d] for d in draws], dtype=int)
+                    arr = np.array([[(idx[a], idx[b]) for a, b in d] for d in draws], dtype=int).reshape(len(draws), -1, 2)
                     pick = arr[rng.integers(0, len(arr), n)]
                     m = np.ones(n, dtype=bool) if t is None or len(qws) == 1 else (qw == idx[t])
                     pairs[m] = pick[m]
@@ -576,6 +576,13 @@ def _test():
     assert fx["rounds"][0]["groups"]["0-0"][-1] == "Glaive" and len(fx["rounds"][0]["matches"]) == 1 and not fx["swissDone"]
     assert not fx["rounds"][1]["open"] and fx["rounds"][1]["groups"] == {}           # round 2 waits for round 1
     assert records(st2, 1) == {"Strata": [1, 0], "Nova": [0, 1]}
+    # a whole legal round 1 entered (Tier 1 v Tier 3, Tier 2 v Tier 2, no shared region): prices fine
+    r1 = {"Q": st2["results"]["Q"]}
+    for a, b in round1_pairings(st, "Glaive")[0]:
+        r1[f"S1:{a}-{b}"] = {"a": a, "b": b, "winner": a}
+    st3 = {**st, "results": r1}
+    r3 = simulate(st3, n=5000)
+    assert abs(r3["theo"].sum() - 310) < 1e-9 and fixtures(st3)["rounds"][1]["open"]
     # a whole Swiss stage + knockout entered: payouts fixed for everyone
     full = dict(st2["results"])
     sim_rng = np.random.default_rng(3)

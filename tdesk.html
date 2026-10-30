@@ -90,13 +90,15 @@ table.bk{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
 .bk td.x{background:var(--cross)}
 .bk .me{color:var(--mine);font-size:10px}
 /* the ladder on the Markets tab */
-.bk.lad td{padding:2px 6px}
-.bk.lad td.who{text-align:left;color:var(--mut);font-size:11px;max-width:80px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bk.lad{table-layout:fixed;max-width:460px}
+.bk.lad th:nth-child(1),.bk.lad th:nth-child(6){width:27%}
+.bk.lad th:nth-child(2),.bk.lad th:nth-child(5){width:9%}
+.bk.lad th:nth-child(3),.bk.lad th:nth-child(4){width:14%}
+.bk.lad td{padding:2px 4px;overflow:hidden}
+.bk.lad td.who{text-align:left;color:var(--mut);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .bk.lad td.who.a{text-align:right}
 .bk.lad td.who.me{color:var(--mine);font-weight:700}
 .bk.lad th.r{text-align:right}
-.bk.lad td.q{width:28px}
-.bk.lad td.px{width:52px}
 .bk.lad td.px.b{color:var(--bid);text-align:right;border-right:1px solid var(--line)}
 .bk.lad td.px.a{color:var(--ask);text-align:left}
 .bk.lad td.px.none{cursor:default}
