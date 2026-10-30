@@ -47,6 +47,8 @@ PORT = int(os.environ.get("TDESK_PORT", 8003))     # set TDESK_PORT to run a sec
 HTML_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tdesk.html")
 TOKEN_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tdesk_token.txt")
 KNOWN_WIDTH = 0.2                        # width of our market around a payout the results have fixed
+TEAM_OWNERS = {"julian"}                 # our teammates' desks (their own API keys): not "the market" -
+                                         # left out of the market mid, copying and takes, shown as "team"
 
 
 def _token():
@@ -67,6 +69,7 @@ def _token():
 TOKEN = _token()
 ALLOWED_HOSTS = {f"localhost:{PORT}", f"127.0.0.1:{PORT}"}
 SHARE = "--share" in sys.argv            # other laptops on the network may use this desk (with the link)
+FOLLOW = "--follow" in sys.argv          # second desk: fair = the mid of the pricing desk's quotes (its own key)
 PLAN_MAX_AGE = 5.0                       # the gateway pulls everything if the plan is older than this
 QUOTE_SIZE = 1                           # one bid and one offer of 1 lot per market
 CONTROLS_DEFAULT = {"ourShare": 0.5, "fatPct": 0.3, "fatMin": 3.0,"deflPct": 0.5, "autoDefl": True, "deflCount": 3, "maxPosAdj": {}, "k": 1.0, "c": 1.0, "maxPos": 10,"startWidth": 20.0, "narrowSecs": 600.0,
@@ -154,21 +157,35 @@ def model():
 
 
 # --- fair values ---------------------------------------------------------------------------------
+def ours(o):
+    """This desk's order or a teammate desk's: neither counts as another market maker."""
+    return o.get("mine") or o.get("owner") in TEAM_OWNERS
+
+
 def market_mids(st, tops, by_team, view):
     """Per team: everyone else's top-of-book mid (nan if not two-sided) and n = how many other
-    market makers are quoting both sides there (1 if the exchange doesn't say who owns orders)."""
+    market makers are quoting both sides there (1 if the exchange doesn't say who owns orders),
+    and the mid of our team's other desk's best bid / offer (nan unless it quotes both sides)."""
     mid, n = np.full(len(st["teams"]), np.nan), np.zeros(len(st["teams"]))
+    tmid = np.full(len(st["teams"]), np.nan)
     insts = {i["id"]: i for i in (view or {}).get("instruments", [])}
     for k, t in enumerate(st["teams"]):
         tb, inst = tops.get(by_team.get(t)), insts.get(by_team.get(t))
+        if inst:
+            def team_best(side):
+                return next((from_px(l["price"]) for l in inst[side]
+                             if any(o.get("owner") in TEAM_OWNERS and not o.get("mine") for o in l["orders"])), None)
+            tb_, ta_ = team_best("bids"), team_best("asks")
+            if tb_ is not None and ta_ is not None:
+                tmid[k] = (tb_ + ta_) / 2
         if not tb or not tb["oBids"] or not tb["oAsks"] or tb.get("closed"):
             continue
         mid[k] = (tb["oBids"][0] + tb["oAsks"][0]) / 2
         def owners(side):
-            return {o.get("owner") for l in inst[side] for o in l["orders"] if not o.get("mine") and o.get("owner")}
+            return {o.get("owner") for l in inst[side] for o in l["orders"] if not ours(o) and o.get("owner")}
         both = owners("bids") & owners("asks")
         n[k] = len(both) or 1
-    return mid, n
+    return mid, n, tmid
 
 
 def update_defl_book(st, ctl, q, width):
@@ -219,7 +236,7 @@ def fairs(st, M, ctl, mkt=None):
     clip = lambda x: np.where(known, lo, np.clip(x, lo, hi))
     base = clip(sim["theo"])
     our = clip(base + tpricer.propagate(cov, {idx[t]: d for t, d in ctl["theoAdj"].items() if t in idx}))
-    mid, n = mkt if mkt is not None else (np.full(len(base), np.nan), np.zeros(len(base)))
+    mid, n = mkt[:2] if mkt is not None else (np.full(len(base), np.nan), np.zeros(len(base)))
     w = min(max(float(ctl["ourShare"]), 0.0), 1.0)                # weight on our fair; the rest on the market mid
     has = ~np.isnan(mid) & ~known
     theo = np.where(has, (1 - w) * np.clip(np.nan_to_num(mid), lo, hi) + w * our, our)
@@ -229,6 +246,9 @@ def fairs(st, M, ctl, mkt=None):
     keep = np.array([ctl["paKeep"].get(t, 0.0) for t in st["teams"]])
     pa0 = theo + defl + keep
     pa = pa0 + tpricer.propagate(cov, {idx[t]: d for t, d in ctl["paAdj"].items() if t in idx})
+    if FOLLOW and mkt is not None and len(mkt) > 2:      # the quoting desk's prices already carry its theo
+        f = ~np.isnan(mkt[2]) & ~known                   # and the team's deflection: take them as they are
+        theo, pa0, pa = (np.where(f, mkt[2], x) for x in (theo, pa0, pa))
     return {"base": base, "our": our, "theo": clip(theo), "pa0": clip(pa0), "pa": clip(pa), "n": n, "mid": mid}
 
 
@@ -271,14 +291,14 @@ def check_mapping(mapping, teams, names):
 
 # --- the quote plan (pure: no exchange calls, so it can be tested) --------------------------------
 def book_tops(view):
-    """Per contract: best bid/ask, and everyone else's levels (levels holding only our orders left out)."""
+    """Per contract: best bid/ask, and everyone else's levels (levels holding only ours / our team's left out)."""
     tops = {}
     for inst in view["instruments"]:
         def others(side):
-            return [from_px(l["price"]) for l in side if not all(o.get("mine") for o in l["orders"])]
+            return [from_px(l["price"]) for l in side if not all(ours(o) for o in l["orders"])]
         def other_qty(side):                    # everyone else's size at their best level
             for l in side:
-                q = sum(o["qty"] for o in l["orders"] if not o.get("mine"))
+                q = sum(o["qty"] for o in l["orders"] if not ours(o))
                 if q:
                     return q
             return 0
@@ -587,6 +607,11 @@ class History:
                 if i == iid:
                     out[(side, round(px, 6))][who] += q
         return out
+
+    def team_pos(self):
+        """{contract id: our teammates' desks' net position}, from every trade in the session's event feed."""
+        with self.lock:
+            return {iid: sum(p.get(w, 0) for w in TEAM_OWNERS) for iid, p in self.parts.items()}
 
     def others(self, iid):
         with self.lock:
@@ -1011,7 +1036,8 @@ def tick():
     tops = book_tops(view)
     names = {i["id"]: i["name"] for i in view["instruments"]}
     by_team = {ctl["mapping"][n]: iid for iid, n in names.items() if n in ctl["mapping"] and ctl["mapping"][n] in st["teams"]}
-    positions = {i["id"]: i["position"] for i in view["instruments"]}
+    team = HISTORY.team_pos() if HISTORY.mid == mid else {}
+    positions = {i["id"]: i["position"] + team.get(i["id"], 0) for i in view["instruments"]}   # ours + team's
     q = np.array([positions.get(by_team.get(t), 0) for t in st["teams"]], dtype=float)
     mkt = market_mids(st, tops, by_team, view)
     model_half = ctl["k"] * M["sim"]["sigmaNext"] + ctl["c"]
@@ -1026,8 +1052,16 @@ def tick():
     plan, rows = plan_quotes(st, M["feasible"], pa, model_half, tops, by_team, positions, ctl, blocked,
                              pairs=(M["pairMin"], M["pairMax"]))
     ok = not check_mapping(ctl["mapping"], st["teams"], list(names.values()))   # Quoting ON is the confirmation
+    # another key's orders under OUR owner name: the gateway (which tracks its orders by owner) would
+    # take the teammate's orders for ours and cancel them - so no quoting until the keys are told apart
+    clash = view.get("you") and any(o.get("owner") == view["you"] and not o.get("mine") for i in view["instruments"]
+                                    for s in ("bids", "asks") for l in i[s] for o in l["orders"])
+    ok = ok and not clash
+    if FOLLOW:                                          # only where the pricing desk quotes both sides: when it
+        led = {by_team[t] for k, t in enumerate(st["teams"]) if t in by_team and not np.isnan(mkt[2][k])}
+        plan = {iid: (o if iid in led else []) for iid, o in plan.items()}   # pulls, we pull too
     if gateway.enabled:
-        takes = {r["iid"]: r["take"] for r in rows if r.get("take") and ok}
+        takes = {r["iid"]: r["take"] for r in rows if r.get("take") and ok and (not FOLLOW or r["iid"] in led)}
         limits = {iid: max_pos(ctl, t) for t, iid in by_team.items()}
         gateway.call(gateway.set_plan, mid, plan if ok else {}, bool(ctl["quoting"] and ok), ctl["requoteMin"],
                      ctl["newsPause"], takes, {iid: m + ctl["hardExtra"] for iid, m in limits.items()}, positions,
@@ -1036,7 +1070,8 @@ def tick():
         HISTORY.update(mid, view, {by_team[t]: pa[k] for k, t in enumerate(st["teams"]) if t in by_team})
     except ApiError as e:
         print("history:", e)
-    STATUS.update(rows=rows, tops=tops, view=view, byTeam=by_team, error=None, at=time.time(), q=q, mkt=mkt,
+    STATUS.update(rows=rows, tops=tops, view=view, byTeam=by_team, at=time.time(), q=q, mkt=mkt,
+                  error="another desk's orders show under our own owner name - quoting is blocked so we don't cancel them" if clash else None,
                   blocked=blocked, risk=risk_used(st, M["feasible"], pa, by_team, positions))
 
 
@@ -1073,7 +1108,7 @@ def instruments(view):
                 who = defaultdict(int)
                 for o in l["orders"]:
                     if o.get("owner"):
-                        who["us" if o.get("mine") else o["owner"]] += o["qty"]
+                        who["us" if o.get("mine") else "team" if o["owner"] in TEAM_OWNERS else o["owner"]] += o["qty"]
                 if not who:
                     who.update(known.get((s, round(px, 6)), {}))
                 mine = sum(o["qty"] for o in l["orders"] if o.get("mine"))
@@ -1117,8 +1152,10 @@ def state_json():
                 F[x][k] = lo
         o_bid = tb["oBids"][0] if tb.get("oBids") else None
         o_ask = tb["oAsks"][0] if tb.get("oAsks") else None
-        pos = im.get("pos", 0)
-        mv = im["settle"] if im.get("settle") is not None else market_value(pos, o_bid, o_ask, ctl["rebateWidth"])
+        own = im.get("pos", 0)                           # this desk's key; P&L is this desk's
+        team_pos = HISTORY.team_pos().get(iid, 0) if iid and HISTORY.mid == ctl["market"] else 0
+        pos = own + team_pos                             # limits, risk, hedges: the team's combined position
+        mv = im["settle"] if im.get("settle") is not None else market_value(own, o_bid, o_ask, ctl["rebateWidth"])
         mark = mv if mv is not None else float(theo[k])
         rows.append({"team": t, "seed": dseed[t], "rank": (st.get("ranks") or {}).get(t),"group": next((g for g, ts in st["groups"].items() if t in ts), ""),
                      "tier": st["tiers"].get(t), "region": st["regions"].get(t),
@@ -1136,7 +1173,8 @@ def state_json():
                      "hidden": t in ctl["hidden"],
                      "theoEdited": t in ctl["theoAdj"], "paEdited": t in ctl["paAdj"],
                      "pWin": float(sim["pWin"][k]), "sd": float(sim["sd"][k]), "rec": table.get(t),
-                     "pos": pos, "avg": im.get("avg"), "mktValue": mv, "pnl": im.get("cash", 0.0) + pos * mark if im else 0.0,
+                     "pos": pos, "ownPos": own, "teamPos": team_pos, "avg": im.get("avg"), "mktValue": mv,
+                     "pnl": im.get("cash", 0.0) + own * mark if im else 0.0,
                      "pnlMarked": mv is not None, "bids": im.get("bids", []), "asks": im.get("asks", []),
                      "oBid": o_bid, "oAsk": o_ask, "off": t in ctl["off"], "blocked": sorted(blocked.get(iid, ())),
                      "hitAt": im.get("hitAt"), "ourBid": r.get("bid"), "ourAsk": r.get("ask"), "tight": bool(r.get("tight")),
@@ -1323,6 +1361,8 @@ def main():
         print("*** TRADING ENABLED: the page at localhost:8003 can send REAL orders. ***")
         if input("Type LIVE to continue: ").strip().lstrip("﻿") != "LIVE":
             raise SystemExit("not confirmed - exiting")
+    if "--rate" in sys.argv:                               # commands/second for this desk (two desks share 20)
+        ps.MAX_CMDS_PER_SEC = int(sys.argv[sys.argv.index("--rate") + 1])
     ps.gateway = gateway = DeskGateway(trading)
     gateway.start()
     save_controls({"quoting": False})                      # never starts quoting by itself

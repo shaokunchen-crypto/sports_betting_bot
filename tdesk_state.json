@@ -103,7 +103,7 @@
    "Glaive"
   ]
  },
- "pBeat": 0.75,
+ "pBeat": 0.85,
  "bo": {
   "qual": 5,
   "swiss": 1,
@@ -119,7 +119,7 @@
   "fatPct": 0.3,
   "fatMin": 3.0,
   "deflPct": 0.5,
-  "autoDefl": false,
+  "autoDefl": true,
   "deflCount": 3,
   "maxPosAdj": {
    "Apex": 10
@@ -129,43 +129,79 @@
   "maxPos": 10,
   "startWidth": 20.0,
   "narrowSecs": 600.0,
-  "wideSince": 1793308840.8645103,
+  "wideSince": 1793361130.8821259,
   "quoting": false,
   "clickQty": 1,
   "market": "friday-sports-betting-market-6b22",
   "mapping": {
-   "Australia": "Nova",
-   "belgium": "Rogue",
-   "Russia": "Echo"
+   "Nova": "Nova",
+   "Rogue": "Rogue",
+   "Echo": "Echo",
+   "Pulse": "Pulse",
+   "Vertex": "Vertex",
+   "Kinetik": "Kinetik",
+   "Drift": "Drift",
+   "Vesper": "Vesper",
+   "Cipher": "Cipher",
+   "Onyx": "Onyx",
+   "Zenith": "Zenith",
+   "Strata": "Strata",
+   "Omni": "Omni",
+   "Flux": "Flux",
+   "Null": "Null",
+   "Apex": "Apex",
+   "Glaive": "Glaive"
   },
-  "mappingOk": false,
+  "mappingOk": true,
   "budget": 2000.0,
   "off": [],
-  "rebateWidth": 3.0,
-  "nTight": 13,
+  "rebateWidth": 5.0,
+  "nTight": 11,
   "requoteMin": 0.0,
   "newsPause": 5.0,
   "hardExtra": 5,
   "take": true,
   "takeEdge": 1.0,
   "takeMax": 5,
-  "theoAdj": {
-   "Nova": -0.4024999999999963
+  "theoAdj": {},
+  "paAdj": {},
+  "paKeep": {
+   "Nova": 0.29999999999999716,
+   "Rogue": -0.041221740178599475,
+   "Echo": -0.04174530118667974,
+   "Pulse": -0.04028207601766809,
+   "Vertex": -0.04336923260013492,
+   "Kinetik": -0.01558066460859564,
+   "Drift": -0.01727631399163343,
+   "Vesper": -0.017468339168363656,
+   "Cipher": -0.018550108299635326,
+   "Onyx": -0.017533654016482103,
+   "Zenith": -0.007210124735486545,
+   "Strata": -0.008887108434525004,
+   "Omni": -0.008768831407058642,
+   "Flux": -0.009908921756395017,
+   "Null": -0.009293252566214605,
+   "Apex": -0.0016568971090320517,
+   "Glaive": -0.0012474339234893606
   },
-  "paAdj": {
-   "Nova": 0.29999999999999716
-  },
-  "paKeep": {},
   "edgeAdj": {
    "Echo": 1.5,
-   "Rogue": 1.5
+   "Kinetik": 1.5,
+   "Drift": 1.5,
+   "Vesper": 1.5,
+   "Cipher": 1.5,
+   "Onyx": 1.5,
+   "Zenith": 1.5,
+   "Strata": 1.5,
+   "Omni": 1.5,
+   "Flux": 1.5,
+   "Null": 1.5,
+   "Apex": 1.5,
+   "Glaive": 1.5
   },
   "hidden": [],
   "layout": {},
-  "deflPos": {
-   "Rogue": -4.0,
-   "Echo": -4.0
-  },
+  "deflPos": {},
   "deflAmt": {}
  }
 }

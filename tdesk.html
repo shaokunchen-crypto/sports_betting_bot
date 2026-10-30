@@ -19,7 +19,7 @@ input[type=number]{width:56px}
 .num{font-variant-numeric:tabular-nums}
 .mut{color:var(--mut)}.pos{color:var(--bid)}.neg{color:var(--ask)}
 /* top bar */
-#bar{display:flex;align-items:center;gap:10px;padding:6px 0;flex-wrap:nowrap;white-space:nowrap}
+#bar{display:flex;align-items:center;gap:6px 10px;padding:6px 0;flex-wrap:wrap;white-space:nowrap}
 .tabs{display:flex;gap:4px}
 .tabs button{border:1px solid #fff;border-radius:5px;background:none;color:var(--ink);font-weight:600;padding:3px 12px}
 .tabs button.act{background:var(--acc);border-color:var(--acc);color:#0d1117}
@@ -62,7 +62,7 @@ input[type=number]{width:56px}
 .dot{display:inline-block;width:8px;height:8px;border-radius:50%}
 #err{color:var(--ask);font-weight:600;min-width:0;flex:0 1 auto;overflow:hidden;text-overflow:ellipsis}
 /* grid */
-#grid{flex:1;min-height:0;display:grid;gap:6px}
+#grid{flex:1;min-height:0;display:grid;gap:6px;overflow-y:auto}   /* zoomed in: squares keep their height, the grid scrolls */
 .colh{display:flex;align-items:center;gap:6px;color:var(--mut);font-weight:700;text-transform:uppercase;letter-spacing:.06em;font-size:11px;cursor:grab;padding:0 4px}
 .cell{background:var(--card);border:1px solid var(--line);border-radius:7px;display:flex;flex-direction:column;min-height:0;min-width:0;overflow:hidden;transition:border-color .15s}
 .cell.flash{border:2px solid var(--hit)!important;box-shadow:0 0 0 2px rgba(255,212,0,.35)}
@@ -90,12 +90,13 @@ table.bk{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
 .bk td.x{background:var(--cross)}
 .bk .me{color:var(--mine);font-size:10px}
 /* the ladder on the Markets tab */
-.bk.lad{table-layout:fixed;max-width:460px}
+.bk.lad{table-layout:fixed;max-width:540px}
 .bk.lad th:nth-child(1),.bk.lad th:nth-child(6){width:27%}
 .bk.lad th:nth-child(2),.bk.lad th:nth-child(5){width:9%}
 .bk.lad th:nth-child(3),.bk.lad th:nth-child(4){width:14%}
 .bk.lad td{padding:2px 4px;overflow:hidden}
-.bk.lad td.who{text-align:left;color:var(--mut);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bk.lad td{font-size:14px;padding:3px 5px}.bk.lad td.px{font-size:16px}.bk.lad th{font-size:11px}   /* bigger ladder */
+.bk.lad td.who{text-align:left;color:var(--mut);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .bk.lad td.who.a{text-align:right}
 .bk.lad td.who.me{color:var(--mine);font-weight:700}
 .bk.lad th.r{text-align:right}
@@ -116,11 +117,11 @@ canvas.ch{flex:1;min-height:0;width:100%;display:block;cursor:crosshair}
 /* steppers: fair / pos-adj - fair / edge, on the side of each market and on top in positions */
 .mrow{flex:1;min-height:0;display:flex}
 .mrow .bd{flex:1;min-width:0}
-.side{display:flex;flex-direction:column;gap:3px;padding:3px 5px;border-left:1px solid var(--line);align-items:stretch;justify-content:flex-start}
+.side{display:flex;flex-direction:column;gap:2px;padding:2px 3px;border-left:1px solid var(--line);align-items:stretch;justify-content:flex-start}
 .side .stp{flex-direction:row;gap:2px}
-.side .stp button{width:36px;line-height:20px}
-.side .stp input{width:58px}
-.side .stp .cap{text-align:left;max-width:none;width:84px;padding-left:3px;line-height:1.1}
+.side .stp button{width:auto;padding:0 3px;line-height:18px}
+.side .stp input{width:46px}
+.side .stp .cap{text-align:left;max-width:none;width:56px;padding-left:2px;line-height:1.1}
 .stp{display:flex;flex-direction:column;align-items:center;gap:1px;min-width:0}
 .stp button{width:58px;padding:0;line-height:14px;font-size:10px}
 .stp input{width:58px;text-align:center;font-weight:700;font-size:13px;padding:1px 2px}
@@ -424,7 +425,7 @@ function placement() {
 function build() {
   const P = placement(), g = $("grid");
   g.style.gridTemplateColumns = `repeat(${P.cols * 2}, minmax(0,1fr))`;
-  g.style.gridTemplateRows = `repeat(${P.rows}, minmax(0,1fr))`;
+  g.style.gridTemplateRows = `repeat(${P.rows}, minmax(260px,1fr))`;
   let h = "";
   for (const {t, col, row: ri, half, c, m} of P.cells) {
     const T = esc(t), J = esc(JSON.stringify(t)), pos = `grid-column:${col};grid-row:${ri}`;
@@ -493,6 +494,8 @@ function render() {
   flashHits();
 }
 
+// position = ours + the team's other desks; show the split when the team holds some
+const split = r => r.teamPos ? ` <span class="mut" title="this desk's key / the team's other desks">(me ${sg(r.ownPos)} · team ${sg(r.teamPos)})</span>` : "";
 function renderMarket(el, r) {
   const qb = el.querySelector(".qb");
   if (!r.iid) { qb.textContent = "no contract"; qb.disabled = true; qb.className = "qb"; }
@@ -508,7 +511,7 @@ function renderMarket(el, r) {
     ? `<span>known value <b>${f2(r.theo)}</b></span><span class="mut">quoted ±0.10</span>`
     : `<span title="(1 - w) × market mid + w × our fair, w = ours % in the top bar"><span class="mut">fair</span> <b>${f2(r.theo)}</b>${r.mktMid != null ? ` <span class="mut">(ours ${f2(r.our)} ${Math.round(S.controls.ourShare * 100)}% · mkt ${f2(r.mktMid)} ${100 - Math.round(S.controls.ourShare * 100)}%)</span>` : ""}</span>
        <span><span class="mut">pos-adj</span> <b>${f2(r.pa)}</b></span>${r.width != null ? `<span class="mut" title="copy: inside the other market makers' top of book, copying it; own: our own market">${r.mode} · ${f2(r.width)} wide${r.edgeEdited ? " (edge set)" : ""}</span>` : ""}`;
-  el.querySelector(".ps").innerHTML = `pos <b class="${r.pos > 0 ? "pos" : r.pos < 0 ? "neg" : ""}">${sg(r.pos)}</b>` + (r.avg != null ? ` <span class="mut">@ ${f2(r.avg)}</span>` : "");
+  el.querySelector(".ps").innerHTML = `pos <b class="${r.pos > 0 ? "pos" : r.pos < 0 ? "neg" : ""}">${sg(r.pos)}</b>` + split(r) + (r.avg != null ? ` <span class="mut">@ ${f2(r.avg)}</span>` : "");
   el.querySelector(".note").textContent = r.iid ? (r.note || (r.tight ? "MM requirement market" : "")) : "map a contract in Add result → Setup";
   el.querySelector(".note").title = r.note || "";
   for (const [cls, w] of [[".mb", "bid"], [".ma", "offer"]]) {             // the fat-finger range on the typing boxes
@@ -542,7 +545,7 @@ function renderPos(el, r) {
   el.querySelector(".rg").textContent = `range ${r.range[0]}–${r.range[1]}`;
   const mv = r.mktValue == null ? `<b class="mut">null</b>` : `<b>${f2(r.mktValue)}</b>`, dot = "<i>·</i>";
   el.querySelector(".kv").innerHTML = [
-    `<span class="k">position:</span> <b class="${r.pos > 0 ? "pos" : r.pos < 0 ? "neg" : ""}">${r.iid ? sg(r.pos) : "no contract"}</b>`,
+    `<span class="k">position:</span> <b class="${r.pos > 0 ? "pos" : r.pos < 0 ? "neg" : ""}">${r.iid ? sg(r.pos) : "no contract"}</b>${r.iid ? split(r) : ""}`,
     `<span class="k">avg price:</span> <b>${r.avg == null ? "–" : f2(r.avg)}</b>`,
     `<span class="k" title="long: best bid we could sell into; short: best offer we could buy back; flat: mid, or one side ± spread/2">market value:</span> ${mv}`,
     `<span class="k" title="cash + position × market value${r.pnlMarked ? "" : " (no market value: marked at fair)"}">MTM P&amp;L:</span> <b class="${r.pnl >= 0 ? "pos" : "neg"}">${f2(r.pnl)}${r.pnlMarked ? "" : "*"}</b>`].map(x => `<span class="it">${x}</span>`).join(` ${dot} `);

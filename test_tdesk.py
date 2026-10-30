@@ -111,7 +111,7 @@ def test_plan():
     view = {"instruments": [inst("i0", teams[0], bids=[(40, False, "a")], asks=[(44, False, "a")])]}
     view["instruments"][0]["bids"][0]["orders"].append({"mine": False, "qty": 1, "owner": "b"})
     view["instruments"][0]["asks"][0]["orders"].append({"mine": False, "qty": 1, "owner": "b"})
-    mid, n = ts.market_mids(st, ts.book_tops(view), {teams[0]: "i0"}, view)
+    mid, n, _ = ts.market_mids(st, ts.book_tops(view), {teams[0]: "i0"}, view)
     assert mid[0] == 42 and n[0] == 2 and np.isnan(mid[1])
 
 

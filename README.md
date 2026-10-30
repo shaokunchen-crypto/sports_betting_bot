@@ -37,6 +37,24 @@ network; allow Python through the Windows firewall when it asks). Everyone then 
 same desk: quotes, results, fair/edge edits, minimised markets, pulls. Each person keeps their own tab,
 charts and zoom. The link lets its holder trade - only give it to the desk. Nobody else runs a server.
 
+## Two desks, two API keys (each person runs their own)
+
+Each person makes their own API key under the same account, puts it in their own `my_keys.py`, and runs
+`start_trading.bat` on their own laptop (http://localhost:8003). What the desk does about it:
+- Orders from `TEAM_OWNERS` (top of `tdesk_server.py`, `{"julian"}`) are our team's, not the market's: they
+  are left out of the market mid, copying the top of book and takes, and show as **team** in the book.
+- Positions are the team's: ours + every `TEAM_OWNERS` desk's net position (from the market's trade feed)
+  drive pos-adj fair, max position, risk and hedges; the page shows the split "(me x · team y)". P&L is this desk's own.
+- **One prices, both quote.** The pricer runs `start_trading.bat` (sets theos, quotes). The other runs
+  `start_follow.bat`: its fair and pos-adj fair are the mid of the pricer's best bid / offer, and it quotes (and
+  takes) on its own key only where the pricer quotes both sides - when the pricer pulls a market, so does it.
+  Position management (hedges, click trades) on the team's combined position works on both.
+- `--rate 9` in `start_trading.bat`: each desk sends at most 9 commands a second, so two desks stay under 20.
+- If another key's orders ever show under OUR owner name, quoting is blocked (red error at the top): the
+  quoter tracks its orders by owner and would otherwise cancel the teammate's.
+- Still shared between desks: **Turn Quotes Off** / news pulls cancel everything on the market if the exchange
+  scopes cancel-all to the account rather than the key - test this before relying on it.
+
 ## Sharing one API key: read this
 
 Everyone with the same key is the **same trader** on the exchange: same positions, same orders,
